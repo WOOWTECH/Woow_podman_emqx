@@ -16,8 +16,8 @@
 ### Step 1: Clone 專案
 
 ```bash
-git clone https://github.com/WOOWTECH/Woow_eqmx_docker_compose_all.git
-cd Woow_eqmx_docker_compose_all
+git clone https://github.com/WOOWTECH/Woow_podman_emqx.git
+cd Woow_podman_emqx
 ```
 
 ### Step 2: 建立環境配置
@@ -76,12 +76,12 @@ curl -s -o /dev/null -w "%{http_code}" http://localhost:18083
 ## 一鍵部署 / One-Liner Deploy
 
 ```bash
-git clone https://github.com/WOOWTECH/Woow_eqmx_docker_compose_all.git && cd Woow_eqmx_docker_compose_all && cp .env.example .env && docker compose up -d
+git clone https://github.com/WOOWTECH/Woow_podman_emqx.git && cd Woow_podman_emqx && cp .env.example .env && docker compose up -d
 ```
 
 **Podman 版本:**
 ```bash
-git clone https://github.com/WOOWTECH/Woow_eqmx_docker_compose_all.git && cd Woow_eqmx_docker_compose_all && cp .env.example .env && podman-compose up -d
+git clone https://github.com/WOOWTECH/Woow_podman_emqx.git && cd Woow_podman_emqx && cp .env.example .env && podman-compose up -d
 ```
 
 ---
@@ -101,7 +101,7 @@ git clone https://github.com/WOOWTECH/Woow_eqmx_docker_compose_all.git && cd Woo
 ## 檔案結構 / File Structure
 
 ```
-Woow_eqmx_docker_compose_all/
+Woow_podman_emqx/
 ├── docker-compose.yml   # 主要部署配置 / Main compose config
 ├── .env.example         # 環境變數範例 / Env vars template
 ├── .gitignore           # Git 忽略規則 / Git ignore rules
