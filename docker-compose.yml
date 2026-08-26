@@ -27,54 +27,6 @@ services:
     networks:
       - emqx_network
 
-  # ngrok TCP tunnel for raw MQTT (port 1883).
-  # opt-in: `podman-compose --profile ngrok up -d` / `docker compose --profile ngrok up -d`
-  # 8083 (MQTT-over-WebSocket) 不在 ngrok 範圍內，請用 Cloudflare Tunnel。
-  ngrok:
-    image: docker.io/ngrok/ngrok:3
-    container_name: ${COMPOSE_PROJECT_NAME:-woow}-emqx-ngrok
-    hostname: emqx-ngrok
-    profiles: [ngrok]
-    restart: unless-stopped
-    environment:
-      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN:?ngrok profile 需要 NGROK_AUTHTOKEN，請在 .env 填入}
-    command: >-
-      tcp emqx:1883
-      ${NGROK_TCP_ADDR:+--remote-addr=${NGROK_TCP_ADDR}}
-      --log stdout
-    depends_on:
-      emqx:
-        condition: service_healthy
-    networks:
-      - emqx_network
-
-  # 等 ngrok tunnel 上線後把 public URL 印到 log（對齊 HA add-on ngrok-announce 行為）
-  ngrok-announce:
-    image: docker.io/alpine:3.20
-    container_name: ${COMPOSE_PROJECT_NAME:-woow}-emqx-ngrok-announce
-    profiles: [ngrok]
-    restart: "no"
-    depends_on:
-      ngrok:
-        condition: service_started
-    entrypoint:
-      - sh
-      - -c
-      - |
-        apk add --no-cache curl jq >/dev/null 2>&1 || true
-        for i in $$(seq 1 60); do
-          url=$$(curl -sf http://ngrok:4040/api/tunnels 2>/dev/null \
-              | jq -r '.tunnels[0].public_url // empty' 2>/dev/null || true)
-          if [ -n "$$url" ]; then
-            echo ">>> MQTT ngrok: $$url"
-            exit 0
-          fi
-          sleep 2
-        done
-        echo "!! 等不到 ngrok tunnel URL（120s 逾時），請看 ngrok service log" >&2
-    networks:
-      - emqx_network
-
 volumes:
   emqx_data:
     name: ${COMPOSE_PROJECT_NAME:-woow}_emqx_data

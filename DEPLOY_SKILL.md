@@ -51,9 +51,12 @@ podman-compose up -d
 
 ```bash
 # 先在 .env 填 NGROK_AUTHTOKEN
-docker compose --profile ngrok up -d
-podman-compose --profile ngrok up -d
+docker  compose -f docker-compose.yml -f docker-compose.ngrok.yml up -d
+podman-compose -f docker-compose.yml -f docker-compose.ngrok.yml up -d
 ```
+
+> 用 `-f` overlay 而非 `--profile ngrok` 是因為 `podman-compose 1.0.6` 不理會
+> compose profiles，會強制啟動所有 profile service 導致 ngrok crash-loop。
 
 ### Step 4: 驗證部署
 
@@ -100,7 +103,7 @@ git clone https://github.com/WOOWTECH/Woow_podman_emqx.git && cd Woow_podman_emq
 **Podman + ngrok（需先在 `.env` 填 `NGROK_AUTHTOKEN`）：**
 
 ```bash
-git clone https://github.com/WOOWTECH/Woow_podman_emqx.git && cd Woow_podman_emqx && cp .env.example .env && sed -i "s/^NGROK_AUTHTOKEN=$/NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN:?export NGROK_AUTHTOKEN=... 先}/" .env && podman-compose --profile ngrok up -d
+git clone https://github.com/WOOWTECH/Woow_podman_emqx.git && cd Woow_podman_emqx && cp .env.example .env && sed -i "s/^NGROK_AUTHTOKEN=$/NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN:?export NGROK_AUTHTOKEN=... 先}/" .env && podman-compose -f docker-compose.yml -f docker-compose.ngrok.yml up -d
 ```
 
 ## 部署到 `podman-mcp.woowtech.io`（`.191` rootless）
@@ -138,7 +141,8 @@ ngrok tunnel 只涵蓋 **1883**；WebSocket（8083）請用 Cloudflare Tunnel。
 
 ```
 Woow_podman_emqx/
-├── docker-compose.yml       # 主要部署配置（含 ngrok sidecar profile）
+├── docker-compose.yml       # 主要部署配置（EMQX 本體）
+├── docker-compose.ngrok.yml # ngrok TCP tunnel overlay（-f 疊加啟用）
 ├── .env.example             # 環境變數範例
 ├── .gitignore
 ├── README.md                # 完整中英文說明
@@ -158,11 +162,11 @@ Woow_podman_emqx/
 ```bash
 # 啟動 / Start
 docker compose up -d
-docker compose --profile ngrok up -d       # 含 ngrok
+docker compose -f docker-compose.yml -f docker-compose.ngrok.yml up -d   # 含 ngrok
 
 # 停止 / Stop
 docker compose down
-docker compose --profile ngrok down
+docker compose -f docker-compose.yml -f docker-compose.ngrok.yml down
 
 # 重啟 / Restart
 docker compose restart

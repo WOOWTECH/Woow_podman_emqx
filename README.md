@@ -65,7 +65,8 @@ Verified environments:
 
 ```
 Woow_podman_emqx/
-├── docker-compose.yml        # Compose service definition (EMQX + optional ngrok sidecar)
+├── docker-compose.yml        # Compose service definition (EMQX only)
+├── docker-compose.ngrok.yml  # Overlay adding ngrok sidecar + announce (opt-in via -f)
 ├── .env.example              # Environment variable template (copy to .env)
 ├── .gitignore                # Excludes .env and other sensitive files
 ├── README.md                 # This bilingual guide
@@ -121,11 +122,13 @@ Setup:
 sed -i 's/^NGROK_AUTHTOKEN=$/NGROK_AUTHTOKEN=YOUR_TOKEN_HERE/' .env
 
 # 2. Optional: pin a reserved TCP address so the public endpoint survives restarts
-#    (Reserve one under https://dashboard.ngrok.com/cloud-edge/tcp-addresses first)
-#    NGROK_TCP_ADDR=1.tcp.ngrok.io:12345
+#    (Reserve one under https://dashboard.ngrok.com/cloud-edge/tcp-addresses,
+#    then edit docker-compose.ngrok.yml's `command:` to add
+#    `--remote-addr=1.tcp.ngrok.io:12345`. See the file for the exact line.)
 
-# 3. Bring up EMQX + ngrok + ngrok-announce
-docker compose --profile ngrok up -d
+# 3. Bring up EMQX + ngrok + ngrok-announce (overlay both compose files)
+docker  compose -f docker-compose.yml -f docker-compose.ngrok.yml up -d
+podman-compose -f docker-compose.yml -f docker-compose.ngrok.yml up -d
 
 # 4. Read the public URL from the announce container
 docker compose logs ngrok-announce
@@ -135,10 +138,15 @@ docker compose logs ngrok-announce
 Turn it off:
 
 ```bash
-docker compose --profile ngrok down
+docker compose -f docker-compose.yml -f docker-compose.ngrok.yml down
 # or just remove ngrok while keeping EMQX
 docker compose rm -sf ngrok ngrok-announce
 ```
+
+> **Why an overlay file instead of `--profile ngrok`?** `podman-compose 1.0.6`
+> ignores compose profiles and starts profiled services unconditionally, so the
+> ngrok container would crash-loop when `NGROK_AUTHTOKEN` is empty. The overlay
+> pattern behaves identically under `docker compose` and `podman-compose`.
 
 ### Deploy on `podman-mcp.woowtech.io` (host `192.168.2.191`) — rootless
 
@@ -212,8 +220,7 @@ repository URL.
 | `MQTT_WSS_PORT`            | `8084`   | MQTT over Secure WebSocket |
 | `EMQX_HOST`                | `127.0.0.1` | Node host / IP (cluster mode) |
 | `EMQX_ALLOW_ANONYMOUS`     | `true`   | Allow anonymous MQTT clients |
-| `NGROK_AUTHTOKEN`          | *(empty)* | Required when `--profile ngrok` is used |
-| `NGROK_TCP_ADDR`           | *(empty)* | Optional reserved TCP address (else auto-assigned) |
+| `NGROK_AUTHTOKEN`          | *(empty)* | Required when `docker-compose.ngrok.yml` overlay is used |
 | `COMPOSE_PROJECT_NAME`     | `woow`   | Prefix for container / volume / network names |
 
 ### Port reference
@@ -357,18 +364,20 @@ podman-compose up -d
 - **只 tunnel 1883**（raw MQTT）。WebSocket（8083）不在範圍內，請用 Cloudflare Tunnel。
 - `ngrok-announce` one-shot 容器會 poll 本地 ngrok API 並把 public URL 印到 log。
 
-啟用：
+啟用（疊加 `docker-compose.ngrok.yml` 這個 overlay 檔）：
 
 ```bash
 # 1. 在 .env 填入 ngrok authtoken
 sed -i 's/^NGROK_AUTHTOKEN=$/NGROK_AUTHTOKEN=你的_token/' .env
 
 # 2. 選填：指定保留的 TCP 位址（重啟後端點才不會變）
-#    先到 https://dashboard.ngrok.com/cloud-edge/tcp-addresses 保留
-#    NGROK_TCP_ADDR=1.tcp.ngrok.io:12345
+#    先到 https://dashboard.ngrok.com/cloud-edge/tcp-addresses 保留，
+#    然後編輯 docker-compose.ngrok.yml 的 command 加上：
+#    --remote-addr=1.tcp.ngrok.io:12345
 
 # 3. 啟動 EMQX + ngrok + ngrok-announce
-docker compose --profile ngrok up -d
+docker  compose -f docker-compose.yml -f docker-compose.ngrok.yml up -d
+podman-compose -f docker-compose.yml -f docker-compose.ngrok.yml up -d
 
 # 4. 從 announce 容器讀取 public URL
 docker compose logs ngrok-announce
@@ -378,10 +387,14 @@ docker compose logs ngrok-announce
 關閉：
 
 ```bash
-docker compose --profile ngrok down
+docker compose -f docker-compose.yml -f docker-compose.ngrok.yml down
 # 或保留 EMQX，只移除 ngrok
 docker compose rm -sf ngrok ngrok-announce
 ```
+
+> **為什麼不用 `--profile ngrok`？** `podman-compose 1.0.6` 會忽略 `profiles:`
+> 並強制啟動所有 profile service，導致 ngrok 沒 token 時 crash-loop。overlay
+> 檔在 docker compose 與 podman-compose 兩邊都正常工作。
 
 ### 部署到 `podman-mcp.woowtech.io`（`192.168.2.191`）— rootless
 

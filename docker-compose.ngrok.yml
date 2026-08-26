@@ -1,0 +1,62 @@
+# ngrok TCP tunnel overlay for EMQX. Opt-in by adding this file to `-f`:
+#
+#   docker  compose -f docker-compose.yml -f docker-compose.ngrok.yml up -d
+#   podman-compose -f docker-compose.yml -f docker-compose.ngrok.yml up -d
+#
+# Requires NGROK_AUTHTOKEN in .env. Optional NGROK_TCP_ADDR for a reserved
+# ngrok TCP address. Only raw MQTT (1883) is tunneled — MQTT-over-WebSocket
+# (8083) is out of scope; use Cloudflare Tunnel for that.
+#
+# Design note: this is a separate overlay file (not compose profiles) because
+# podman-compose 1.0.6 ignores `profiles:` and starts profile services
+# unconditionally, causing the ngrok container to crash-loop when
+# NGROK_AUTHTOKEN is empty.
+
+services:
+  ngrok:
+    image: docker.io/ngrok/ngrok:3
+    container_name: ${COMPOSE_PROJECT_NAME:-woow}-emqx-ngrok
+    hostname: emqx-ngrok
+    restart: unless-stopped
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
+    # Auto address: ngrok picks a random `N.tcp.ngrok.io:PORT` each restart.
+    # For a reserved address, first reserve it under
+    #   https://dashboard.ngrok.com/cloud-edge/tcp-addresses
+    # then change the command below to (example):
+    #   command: tcp emqx:1883 --remote-addr=1.tcp.ngrok.io:12345 --log stdout
+    # We do NOT use ${NGROK_TCP_ADDR:+...} conditional expansion because
+    # podman-compose 1.0.6 leaves the token literal, which breaks ngrok.
+    command: tcp emqx:1883 --log stdout
+    depends_on:
+      emqx:
+        condition: service_healthy
+    networks:
+      - emqx_network
+
+  # 等 ngrok tunnel 上線後把 public URL 印到 log
+  # (對齊 Woow_ha_emqx 的 ngrok-announce s6 service)
+  ngrok-announce:
+    image: docker.io/alpine:3.20
+    container_name: ${COMPOSE_PROJECT_NAME:-woow}-emqx-ngrok-announce
+    restart: "no"
+    depends_on:
+      ngrok:
+        condition: service_started
+    entrypoint:
+      - sh
+      - -c
+      - |
+        apk add --no-cache curl jq >/dev/null 2>&1 || true
+        for i in $$(seq 1 60); do
+          url=$$(curl -sf http://ngrok:4040/api/tunnels 2>/dev/null \
+              | jq -r '.tunnels[0].public_url // empty' 2>/dev/null || true)
+          if [ -n "$$url" ]; then
+            echo ">>> MQTT ngrok: $$url"
+            exit 0
+          fi
+          sleep 2
+        done
+        echo "!! 等不到 ngrok tunnel URL（120s 逾時），請看 ngrok service log" >&2
+    networks:
+      - emqx_network
