@@ -1,31 +1,21 @@
-version: '3.8'
-
 services:
   emqx:
-    image: emqx/emqx:${EMQX_VERSION:-latest}
-    container_name: emqx
+    image: docker.io/emqx/emqx:${EMQX_VERSION:-5.8.9}
+    container_name: ${COMPOSE_PROJECT_NAME:-woow}-emqx
+    hostname: emqx
     restart: unless-stopped
     environment:
-      # Dashboard 管理員帳號
       - EMQX_DASHBOARD__DEFAULT_USERNAME=${EMQX_DASHBOARD_USER:-admin}
       - EMQX_DASHBOARD__DEFAULT_PASSWORD=${EMQX_DASHBOARD_PASSWORD:-public}
-      # 節點名稱
-      - EMQX_NODE_NAME=emqx@${EMQX_HOST:-127.0.0.1}
-      # 允許匿名連接 (生產環境建議關閉)
+      - EMQX_NODE__NAME=emqx@${EMQX_HOST:-127.0.0.1}
       - EMQX_ALLOW_ANONYMOUS=${EMQX_ALLOW_ANONYMOUS:-true}
     ports:
-      # MQTT TCP
       - "${MQTT_TCP_PORT:-1883}:1883"
-      # MQTT SSL/TLS
       - "${MQTT_SSL_PORT:-8883}:8883"
-      # MQTT WebSocket
       - "${MQTT_WS_PORT:-8083}:8083"
-      # MQTT WebSocket SSL
       - "${MQTT_WSS_PORT:-8084}:8084"
-      # Dashboard Web UI
       - "${EMQX_DASHBOARD_PORT:-18083}:18083"
     volumes:
-      # 持久化數據
       - emqx_data:/opt/emqx/data
       - emqx_log:/opt/emqx/log
     healthcheck:
@@ -39,11 +29,11 @@ services:
 
 volumes:
   emqx_data:
-    name: emqx_data
+    name: ${COMPOSE_PROJECT_NAME:-woow}_emqx_data
   emqx_log:
-    name: emqx_log
+    name: ${COMPOSE_PROJECT_NAME:-woow}_emqx_log
 
 networks:
   emqx_network:
-    name: emqx_network
+    name: ${COMPOSE_PROJECT_NAME:-woow}_emqx_network
     driver: bridge

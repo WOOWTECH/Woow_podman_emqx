@@ -1,0 +1,8 @@
+[Unit]
+Description=Woow EMQX shared network
+
+[Network]
+NetworkName=woow-emqx
+
+[Install]
+WantedBy=default.target
