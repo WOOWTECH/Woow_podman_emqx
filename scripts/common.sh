@@ -30,7 +30,7 @@ app_lock() {
 app_env_keys() { sed -nE 's/^([A-Za-z_][A-Za-z0-9_]*)=.*/\1/p' "$1"; }
 
 # app_is_credential_key <KEY>: names whose values are credentials
-app_is_credential_key() { [[ $1 =~ (PASSWORD|PASSWD|SECRET|TOKEN|AUTHTOKEN|API_KEY|PRIVATE_KEY)$ ]]; }
+app_is_credential_key() { [[ $1 =~ (PASSWORD|PASSWD|SECRET|TOKEN|_KEY)$ ]]; }
 
 # app_apply_sets KEY=VALUE...: store per-host settings (install.sh --set) in the env file. Only keys
 # the example defines are accepted, and never credentials (they would end up in argv and history).

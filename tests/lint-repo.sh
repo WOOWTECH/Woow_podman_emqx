@@ -7,14 +7,15 @@
 #   3. both READMEs lead with the Quadlet install and point Docker users to compose-final
 #   4. repo-specific checks (lint_local, at the end of this file)
 #
-# Matches are printed with the value masked.
+# Matches are reported as file:line only; the matched text is never printed.
 set -euo pipefail
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 cd "$REPO"
 fails=0
 fail() { printf 'FAIL %s\n' "$*"; fails=$((fails + 1)); }
 ok() { printf 'ok   %s\n' "$*"; }
-mask() { sed -E 's/([=:][[:space:]]*["'\'']?)[^[:space:]"'\'']{3}[^[:space:]"'\'']*/\1***/'; }
+# where <hits>: print file:line only, never the matched text
+where() { cut -d: -f1,2 | sed 's/^/     /'; }
 
 mapfile -t files < <(git ls-files --cached --others --exclude-standard | grep -v '^scripts/lib/quadlet-lib\.sh$' || true)
 text=()
@@ -23,19 +24,19 @@ for f in "${files[@]}"; do [[ -f $f ]] && grep -Iq . "$f" 2>/dev/null && text+=(
 # ---- 1. credentials ------------------------------------------------------------------------------
 # KEY=value lines whose key names a credential and whose value is a literal (not empty, not a
 # $VAR / @@TOKEN@@ / <placeholder> / *_FILE path).
-cred_re='(^|[^A-Za-z0-9_])[A-Z0-9_]*(PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|AUTHTOKEN)=[^[:space:]$@<"'\''`{}(]'
+cred_re='(^|[^A-Za-z0-9_])[A-Z0-9_]*(PASSWORD|PASSWD|SECRET|TOKEN|_KEY)=[^[:space:]$@<"'\''`{}(]'
 hits=$(grep -nHE "$cred_re" "${text[@]}" 2>/dev/null | grep -vE '(_FILE|_PATH)=' || true)
-if [[ -n $hits ]]; then fail "literal credential assignments:"; mask <<<"$hits" | sed 's/^/     /'; else ok "no literal credential assignments"; fi
+if [[ -n $hits ]]; then fail "literal credential assignments at:"; where <<<"$hits"; else ok "no literal credential assignments"; fi
 # Well-known defaults and token formats.
 known='admin_passwd[[:space:]]*=[[:space:]]*admin([[:space:]]|$)|DEFAULT_PASSWORD[=:][[:space:]]*public|DASHBOARD_PASSWORD[=:][[:space:]]*(public|admin)([[:space:]]|$)'
 known+='|ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|sk-[A-Za-z0-9_-]{32,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}'
 known+='|-----BEGIN [A-Z ]*PRIVATE KEY-----|eyJhbGciOi[A-Za-z0-9_-]{20,}\.'
 hits=$(grep -nHE "$known" "${text[@]}" 2>/dev/null || true)
-if [[ -n $hits ]]; then fail "default passwords or token-shaped strings:"; mask <<<"$hits" | sed 's/^/     /'; else ok "no default passwords or token-shaped strings"; fi
+if [[ -n $hits ]]; then fail "default passwords or token-shaped strings at:"; where <<<"$hits"; else ok "no default passwords or token-shaped strings"; fi
 
 # ---- 2. D1: compose files are gone ---------------------------------------------------------------
 left=$(printf '%s\n' "${files[@]}" | grep -E '(^|/)(docker|podman)-compose[^/]*\.ya?ml$|^compose/|^\.env\.example$' || true)
-if [[ -n $left ]]; then fail "compose deployment files remain (D1):"; sed 's/^/     /' <<<"$left"; else ok "no compose files (D1)"; fi
+if [[ -n $left ]]; then fail "compose deployment files remain (D1):"; while IFS= read -r l; do printf "     %s\n" "$l"; done <<<"$left"; else ok "no compose files (D1)"; fi
 
 # ---- 3. READMEs --------------------------------------------------------------------------------
 for r in README.md README_zh-TW.md; do
