@@ -1,249 +1,52 @@
-# EMQX Docker Compose 部署 Skill / Deployment Skill
+# EMQX Quadlet deployment skill / 部署 Skill
 
-> 本檔案提供 AI 助手快速部署 EMQX 的完整指引。
-> This file provides AI assistants a complete guide for rapid EMQX deployment.
+> A runbook for AI assistants and operators. The README has the details; this page is the short path.
+> 給 AI 助手與維運人員的操作手冊；細節見 README，這裡是最短路徑。
 
----
+## Rules / 規則
 
-## 前置條件 / Prerequisites
+- Run everything as the user that owns the containers, in a real login session (ssh or console). Never
+  use `sudo` or `su` for these scripts.
+  以擁有容器的使用者、在真正的登入工作階段中執行，腳本不可用 `sudo` 或 `su`。
+- Never put credentials on a command line, in the env file or in a commit. They live in podman secrets.
+  憑證不可放在指令列、env 檔或 commit 中，一律存在 podman secrets。
+- Never print a secret value into a shared log or chat. Read it only in a private terminal.
+  不要把 secret 值印到共享的 log 或對話中，只在私人終端機讀取。
 
-- Docker 20.10+ 或 Podman 4.0+
-- Docker Compose 2.0+ 或 podman-compose 1.0.6+
-- 可用端口: 1883, 8883, 8083, 8084, 18083
-- 使用 ngrok tunnel 需 ngrok 帳號 + authtoken
-
-## 部署步驟 / Deployment Steps
-
-### Step 1: Clone 專案
-
-```bash
-git clone https://github.com/WOOWTECH/Woow_podman_emqx.git
-cd Woow_podman_emqx
-```
-
-### Step 2: 建立環境配置
+## Fresh install / 全新安裝
 
 ```bash
-cp .env.example .env
+git clone https://github.com/WOOWTECH/Woow_podman_emqx.git ~/Woow_podman_emqx
+cd ~/Woow_podman_emqx
+bash tests/dryrun.sh                         # static check on this host: same result as CI
+scripts/install.sh --accept-defaults         # or run it once, edit ~/.config/emqx/emqx.env, run again
+tests/smoke.sh                               # A1-A8 must PASS; the key one is "A5 anonymous MQTT is refused"
 ```
 
-如需修改密碼或端口，編輯 `.env`：
+Ports taken on the host? Move them at install time / 主機埠被占用時，安裝時改埠：
 
 ```bash
-# 修改 Dashboard 密碼
-sed -i 's/EMQX_DASHBOARD_PASSWORD=public/EMQX_DASHBOARD_PASSWORD=YourSecurePassword/' .env
-
-# 或手動編輯
-nano .env
+scripts/install.sh --set WOOW_EMQX_PORT_MQTT=21883 --set WOOW_EMQX_PORT_DASHBOARD=28083
 ```
 
-### Step 3: 啟動服務
+## Day 2 / 日常維運
 
-**只跑 EMQX：**
+| Task | Command |
+|---|---|
+| Status | `systemctl --user status emqx.service`; `podman ps --filter name=woow-emqx` |
+| Logs | `journalctl --user -u emqx.service -n 100` |
+| Change a setting | edit `~/.config/emqx/emqx.env`, then `scripts/install.sh` |
+| Upgrade | `git pull && scripts/upgrade.sh` (automatic unit rollback on failure) |
+| Backup | `scripts/backup.sh` (hot) or `scripts/backup.sh --cold` |
+| Restore | `scripts/restore.sh --archive <file> --confirm-restore emqx` |
+| Tunnel | `NGROK_AUTHTOKEN=<token> scripts/install.sh --with-ngrok`, `scripts/ngrok-url.sh` |
+| Remove | `scripts/uninstall.sh` (keeps data) or `scripts/uninstall.sh --purge --yes` |
 
-```bash
-docker compose up -d
-# 或 Podman
-podman-compose up -d
-```
+Remote host / 遠端主機：`ssh <host> 'cd ~/Woow_podman_emqx && git pull && scripts/upgrade.sh'`.
 
-**EMQX + ngrok TCP tunnel（把 1883 開到公網）：**
+## Done when / 完成條件
 
-```bash
-# 先在 .env 填 NGROK_AUTHTOKEN
-docker  compose -f docker-compose.yml -f docker-compose.ngrok.yml up -d
-podman-compose -f docker-compose.yml -f docker-compose.ngrok.yml up -d
-```
-
-> 用 `-f` overlay 而非 `--profile ngrok` 是因為 `podman-compose 1.0.6` 不理會
-> compose profiles，會強制啟動所有 profile service 導致 ngrok crash-loop。
-
-### Step 4: 驗證部署
-
-```bash
-# 檢查容器狀態 (等待 healthy)
-docker compose ps
-podman-compose ps
-
-# 檢查 EMQX 運行狀態（container_name 預設 woow-emqx）
-docker exec woow-emqx emqx ctl status
-podman exec woow-emqx emqx ctl status
-
-# 測試 Dashboard HTTP 回應
-curl -s -o /dev/null -w "%{http_code}" http://localhost:18083
-# 預期回應: 200
-
-# ngrok 啟用時，看公開 URL
-docker compose logs ngrok-announce
-# >>> MQTT ngrok: tcp://1.tcp.ngrok.io:12345
-```
-
-### Step 5: 登入 Dashboard
-
-- URL: http://localhost:18083
-- 帳號: admin
-- 密碼: public（或 `.env` 中設定的密碼）
-
----
-
-## 一鍵部署 / One-Liner Deploy
-
-**Docker（純 EMQX）：**
-
-```bash
-git clone https://github.com/WOOWTECH/Woow_podman_emqx.git && cd Woow_podman_emqx && cp .env.example .env && docker compose up -d
-```
-
-**Podman（純 EMQX）：**
-
-```bash
-git clone https://github.com/WOOWTECH/Woow_podman_emqx.git && cd Woow_podman_emqx && cp .env.example .env && podman-compose up -d
-```
-
-**Podman + ngrok（需先在 `.env` 填 `NGROK_AUTHTOKEN`）：**
-
-```bash
-git clone https://github.com/WOOWTECH/Woow_podman_emqx.git && cd Woow_podman_emqx && cp .env.example .env && sed -i "s/^NGROK_AUTHTOKEN=$/NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN:?export NGROK_AUTHTOKEN=... 先}/" .env && podman-compose -f docker-compose.yml -f docker-compose.ngrok.yml up -d
-```
-
-## 部署到 `podman-mcp.woowtech.io`（`.191` rootless）
-
-```bash
-ssh woowtech-ai-coder@192.168.2.191 <<'EOF'
-  cd ~ && [ -d Woow_podman_emqx ] || git clone https://github.com/WOOWTECH/Woow_podman_emqx.git
-  cd ~/Woow_podman_emqx && git pull
-  [ -f .env ] || cp .env.example .env
-  podman-compose up -d
-  sleep 20
-  podman exec woow-emqx emqx ctl status || echo "!! EMQX not healthy yet"
-EOF
-```
-
-Systemd Quadlet 自動啟動見 [`podman-quadlet/README.md`](podman-quadlet/README.md)。
-
----
-
-## 端口對照表 / Port Reference
-
-| 端口 Port | 協定 Protocol | 用途 Purpose |
-|-----------|--------------|-------------|
-| 1883 | MQTT TCP | 標準 MQTT 連接 / Standard MQTT |
-| 8883 | MQTT SSL | 加密 MQTT 連接 / Encrypted MQTT |
-| 8083 | WebSocket | MQTT over WS |
-| 8084 | WebSocket SSL | MQTT over WSS |
-| 18083 | HTTP | Dashboard 管理介面 / Web UI |
-
-ngrok tunnel 只涵蓋 **1883**；WebSocket（8083）請用 Cloudflare Tunnel。
-
----
-
-## 檔案結構 / File Structure
-
-```
-Woow_podman_emqx/
-├── docker-compose.yml       # 主要部署配置（EMQX 本體）
-├── docker-compose.ngrok.yml # ngrok TCP tunnel overlay（-f 疊加啟用）
-├── .env.example             # 環境變數範例
-├── .gitignore
-├── README.md                # 完整中英文說明
-├── CHANGELOG.md             # 版本紀錄
-├── DEPLOY_SKILL.md          # 本檔案
-└── podman-quadlet/          # systemd Quadlet units (.191 rootless)
-    ├── README.md
-    ├── emqx.network
-    ├── emqx.container
-    └── emqx-ngrok.container
-```
-
----
-
-## 常用操作指令 / Common Operations
-
-```bash
-# 啟動 / Start
-docker compose up -d
-docker compose -f docker-compose.yml -f docker-compose.ngrok.yml up -d   # 含 ngrok
-
-# 停止 / Stop
-docker compose down
-docker compose -f docker-compose.yml -f docker-compose.ngrok.yml down
-
-# 重啟 / Restart
-docker compose restart
-
-# 查看日誌 / View logs
-docker compose logs -f emqx
-docker compose logs -f ngrok               # ngrok 錯誤
-docker compose logs ngrok-announce         # public URL
-
-# 進入容器 / Enter container
-docker compose exec emqx sh
-
-# 查看狀態 / Check status
-docker compose exec emqx emqx ctl status
-
-# 列出已連接客戶端 / List connected clients
-docker compose exec emqx emqx ctl clients list
-
-# 列出訂閱主題 / List subscriptions
-docker compose exec emqx emqx ctl topics list
-```
-
-Podman 使用者：`docker compose` → `podman-compose`，`docker exec` → `podman exec`。
-
----
-
-## MQTT 測試指令 / MQTT Test Commands
-
-```bash
-# 安裝 mosquitto 客戶端
-sudo apt install mosquitto-clients          # Ubuntu / Debian
-brew install mosquitto                       # macOS
-
-# 訂閱 / Subscribe (Terminal 1)
-mosquitto_sub -h localhost -p 1883 -t "test/topic" -v
-
-# 發布 / Publish (Terminal 2)
-mosquitto_pub -h localhost -p 1883 -t "test/topic" -m "Hello EMQX!"
-
-# 透過 ngrok（假設 public URL 是 tcp://1.tcp.ngrok.io:12345）
-mosquitto_sub -h 1.tcp.ngrok.io -p 12345 -t "test/topic" -v
-```
-
----
-
-## 資料備份還原 / Backup & Restore
-
-```bash
-# 備份 / Backup
-docker run --rm -v woow_emqx_data:/data -v $(pwd):/backup alpine tar czf /backup/emqx_data_backup.tar.gz /data
-docker run --rm -v woow_emqx_log:/data -v $(pwd):/backup alpine tar czf /backup/emqx_log_backup.tar.gz /data
-
-# 還原 / Restore
-docker run --rm -v woow_emqx_data:/data -v $(pwd):/backup alpine tar xzf /backup/emqx_data_backup.tar.gz -C /
-docker run --rm -v woow_emqx_log:/data -v $(pwd):/backup alpine tar xzf /backup/emqx_log_backup.tar.gz -C /
-```
-
----
-
-## 故障排除 / Troubleshooting
-
-| 問題 Issue | 解決方案 Solution |
-|-----------|-----------------|
-| 容器一直重啟 / Container keeps restarting | 檢查端口衝突: `ss -tlnp \| grep -E '1883\|8883\|8083\|8084\|18083'` |
-| Dashboard 無法訪問 / Dashboard unreachable | 確認容器 healthy: `docker compose ps` |
-| MQTT 連接被拒 / MQTT connection refused | 確認 1883 端口已開放，檢查防火牆設定 |
-| 密碼不正確 / Wrong password | 重新建立容器: `docker compose down -v && docker compose up -d` |
-| `ngrok` 一直重啟 | `NGROK_AUTHTOKEN` 空或無效 — 檢查 `docker compose logs ngrok` |
-| `ngrok-announce` 印 timeout | ngrok tunnel 120s 內沒建立 — 讀 `docker compose logs ngrok` 找真正原因 |
-
----
-
-## 生產環境安全建議 / Production Security
-
-1. 修改預設密碼 / Change default password
-2. 設定 `EMQX_ALLOW_ANONYMOUS=false`
-3. 啟用 SSL/TLS 證書 / Enable SSL/TLS certificates
-4. 設定防火牆規則，或把 `.env` 埠改成 `127.0.0.1:PORT` 只綁 localhost
-5. 定期備份資料 / Regular data backups
-6. 用 ngrok 時搭配 EMQX 帳密驗證（Access Control → Authentication），別靠 ngrok tunnel 隱蔽性
+- `tests/smoke.sh` ends with `0 failed`.
+- `systemctl --user list-dependencies default.target --plain | grep -w emqx.service` prints the unit
+  (it starts at boot through linger).
+- Running `scripts/install.sh` a second time reports `nothing to restart or start`.
