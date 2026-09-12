@@ -17,15 +17,20 @@ ok() { printf 'ok   %s\n' "$*"; }
 # where <hits>: print file:line only, never the matched text
 where() { cut -d: -f1,2 | sed 's/^/     /'; }
 
-mapfile -t files < <(git ls-files --cached --others --exclude-standard | grep -v '^scripts/lib/quadlet-lib\.sh$' || true)
+# The vendored library and this script itself carry the patterns by nature.
+mapfile -t files < <(git ls-files --cached --others --exclude-standard \
+  | grep -vE '^(scripts/lib/quadlet-lib\.sh|tests/lint-repo\.sh)$' || true)
 text=()
 for f in "${files[@]}"; do [[ -f $f ]] && grep -Iq . "$f" 2>/dev/null && text+=("$f"); done
 
 # ---- 1. credentials ------------------------------------------------------------------------------
 # KEY=value lines whose key names a credential and whose value is a literal (not empty, not a
 # $VAR / @@TOKEN@@ / <placeholder> / *_FILE path).
-cred_re='(^|[^A-Za-z0-9_])[A-Z0-9_]*(PASSWORD|PASSWD|SECRET|TOKEN|_KEY)=[^[:space:]$@<"'\''`{}(]'
-hits=$(grep -nHE "$cred_re" "${text[@]}" 2>/dev/null | grep -vE '(_FILE|_PATH)=' || true)
+cred_re='(^|[^A-Za-z0-9_])[A-Z0-9_]*(PASSWORD|PASSWD|SECRET|TOKEN|_KEY)=[^[:space:]$@<"'\''`{}(%]'
+# Obvious placeholders (dummy/example/placeholder/changeme/redacted values) are not credentials.
+hits=$(grep -nHE "$cred_re" "${text[@]}" 2>/dev/null \
+  | grep -vE '(_FILE|_PATH)=' \
+  | grep -viE '=[A-Za-z0-9_-]*(dummy|example|placeholder|changeme|redacted|your[_-]?)[A-Za-z0-9_-]*([[:space:]]|$)' || true)
 if [[ -n $hits ]]; then fail "literal credential assignments at:"; where <<<"$hits"; else ok "no literal credential assignments"; fi
 # Well-known defaults and token formats.
 known='admin_passwd[[:space:]]*=[[:space:]]*admin([[:space:]]|$)|DEFAULT_PASSWORD[=:][[:space:]]*public|DASHBOARD_PASSWORD[=:][[:space:]]*(public|admin)([[:space:]]|$)'
