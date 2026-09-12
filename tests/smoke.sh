@@ -25,7 +25,7 @@ while (($#)); do
   case $1 in
     --quick) quick=1 ;;
     --no-mqtt) mqtt=0 ;;
-    -h | --help) sed -n '2,13p' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,12p' "$0"; exit 0 ;;
     *) ql_die "unknown option $1 (see --help)" ;;
   esac
   shift

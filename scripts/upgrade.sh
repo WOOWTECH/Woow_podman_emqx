@@ -22,7 +22,7 @@ while (($#)); do
   case $1 in
     --cold) backup_args+=(--cold) ;;
     --no-backup) no_backup=1 ;;
-    -h | --help) sed -n '2,13p' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,11p' "$0"; exit 0 ;;
     *) ql_die "unknown option $1 (see --help)" ;;
   esac
   shift
