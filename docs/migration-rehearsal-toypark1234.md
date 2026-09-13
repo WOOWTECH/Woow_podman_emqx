@@ -212,7 +212,35 @@ found.
 
 ## Tests
 
-`tests/rollback-model.sh`: **19 passed, 0 failed**, and all 19 were red-checked — each test was
+`tests/rollback-model.sh`: **22 passed, 0 failed**, and all 22 were red-checked — each test was
 re-run against a deliberately broken copy of the code it pins and had to fail. The exercise found a
 weak test (it matched the script's header comment rather than a call site) and that test was
 tightened.
+
+```
+$ bash tests/rollback-model.sh
+ok    t_a_container_from_another_compose_project_is_refused
+ok    t_a_container_that_grew_a_writable_layer_is_committed
+ok    t_a_container_with_no_compose_label_is_warned_about_not_refused
+ok    t_always_policy_with_a_disabled_unit_is_still_rename
+ok    t_an_unmeasurable_writable_layer_warns_instead_of_committing_silently
+ok    t_app_unlocked_closes_the_inherited_lock_descriptor
+ok    t_capture_is_idempotent_between_prepare_only_and_the_cutover
+ok    t_capture_refuses_a_container_the_library_cannot_replay
+ok    t_disabled_restart_unit_keeps_the_rename_path
+ok    t_emqx_writable_layer_is_too_small_to_commit
+ok    t_enabled_restart_unit_and_always_policy_takes_the_capture_path
+ok    t_everything_that_starts_a_container_runs_through_app_unlocked
+ok    t_migrate_legacy_asks_the_host_instead_of_refusing
+ok    t_retire_refuses_to_remove_without_a_capture
+ok    t_the_capture_is_taken_before_any_downtime
+ok    t_the_capture_path_never_removes_the_volumes
+ok    t_the_migration_checks_the_project_label_before_touching_anything
+ok    t_the_rollback_recreates_the_captured_broker_with_restart_policy_always
+ok    t_the_units_adopt_the_compose_era_names
+ok    t_volume_identity_changes_when_the_volume_is_not_the_same_one
+ok    t_volume_identity_fails_loudly_for_a_volume_that_is_gone
+ok    t_volume_identity_is_mountpoint_createdat_and_inode
+
+22 passed, 0 failed
+```
