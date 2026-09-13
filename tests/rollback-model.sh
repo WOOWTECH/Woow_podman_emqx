@@ -273,6 +273,36 @@ t_the_units_adopt_the_compose_era_names() {
   return 0
 }
 
+# ---- the app lock must not leak into the containers we start --------------------------------
+t_app_unlocked_closes_the_inherited_lock_descriptor() {
+  # ql_lock uses `exec {fd}>lock`, which bash does not mark close-on-exec, so conmon and
+  # rootlessport inherit it and hold the flock for as long as the container runs - which blocked a
+  # second run and, worse, --rollback. Verified live on toypark1234 (the emqx and odoo18 locks were
+  # both held by an inherited descriptor). Everything that can start a container goes through
+  # app_unlocked until the library closes it itself.
+  ql_lock emqx
+  [[ -n ${QL_LOCK_FD:-} ]] || die_t "ql_lock did not publish QL_LOCK_FD"
+  # the descriptor is open for an ordinary child...
+  eval "[[ -e /proc/self/fd/$QL_LOCK_FD ]]" || die_t "the lock descriptor is not open in this shell"
+  local seen
+  seen=$(app_unlocked bash -c "test -e /proc/self/fd/$QL_LOCK_FD && echo inherited || echo closed")
+  eq "$seen" closed "the lock descriptor inside a command run through app_unlocked"
+  seen=$(bash -c "test -e /proc/self/fd/$QL_LOCK_FD && echo inherited || echo closed")
+  eq "$seen" inherited "without app_unlocked the descriptor is inherited (this is the bug)"
+}
+
+t_everything_that_starts_a_container_runs_through_app_unlocked() {
+  local code line starts
+  # shellcheck disable=SC2016 # literal call-site text, not an expansion
+  starts='\$REPO/scripts/install\.sh|podman start |\$\{smoke\[@\]\}'
+  # command lines only: ql_info/ql_warn/ql_die arguments merely name these things.
+  code=$(grep -vE '^[[:space:]]*#|ql_(info|warn|die) ' "$REPO/scripts/migrate-legacy.sh")
+  while IFS= read -r line; do
+    [[ $line == *app_unlocked* ]] || die_t "starts a container without app_unlocked: $line"
+  done < <(grep -E "$starts" <<<"$code")
+  return 0
+}
+
 run() {
   local t=$1 log rc
   [[ -z $FILTER || $t == *"$FILTER"* ]] || return 0
