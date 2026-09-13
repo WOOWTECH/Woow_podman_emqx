@@ -109,8 +109,7 @@ if [[ $mode == status ]]; then
 fi
 
 ql_preflight "$PODMAN_MIN"
-app_lock
-
+ql_lock "$APP"
 unit_exists() { [[ -n $(systemctl --user show -p FragmentPath --value "$1" 2>/dev/null) ]]; }
 quadlet_installed() { [[ -s $APP_STATE_DIR/manifest ]] && unit_exists "$UNIT"; }
 running() { [[ $(podman inspect --format '{{.State.Status}}' "$1" 2>/dev/null) == running ]]; }
@@ -299,7 +298,7 @@ if [[ $mode == dry-run ]]; then
   # would create and edit ~/.config/emqx/emqx.env (ql_env_ensure and --set are not dry-run aware),
   # and a --dry-run that writes to the host is not a dry run.
   WORK=$(mktemp -d "${TMPDIR:-/tmp}/$APP-migrate.XXXXXX")
-  trap 'rm -rf "$WORK"' EXIT
+  ql_cleanup work rm -rf "$WORK"
   mkdir -p "$WORK/src" "$WORK/out/config"
   if [[ -f $ENV_FILE ]]; then cp -p -- "$ENV_FILE" "$WORK/$APP.env"; else install -m 600 -- "$ENV_EXAMPLE" "$WORK/$APP.env"; fi
   for kv in "${sets[@]}"; do ql_env_set "$WORK/$APP.env" "${kv%%=*}" "${kv#*=}"; done
