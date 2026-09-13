@@ -247,7 +247,7 @@ Two things change on purpose, and the script says so:
 
 * **The dashboard password does not.** EMQX seeds `EMQX_DASHBOARD__DEFAULT_PASSWORD` only into an
   *empty* data volume, so the generated `woow-emqx-dashboard-password` secret is inert on an adopted
-  one and the old password still works. Pass `--reset-dashboard-password` to align them, or run
+  one and the old password still works. It does that for you unless you pass `--keep-dashboard-password`; you can also run
   `podman exec woow-emqx emqx ctl admins passwd admin <new>` later.
 * **`config/base.hocon` declares a built-in-database authenticator.** A compose broker whose
   authentication chain was empty accepted anonymous clients (`EMQX_ALLOW_ANONYMOUS` does nothing in

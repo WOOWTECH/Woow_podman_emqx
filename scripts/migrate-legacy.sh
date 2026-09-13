@@ -6,7 +6,7 @@
 # install by comparing each volume's mountpoint, inode and CreatedAt with the values read
 # before the cutover.
 #
-#   scripts/migrate-legacy.sh [--legacy-dir DIR] [--suffix YYYYMMDD] [--reset-dashboard-password]
+#   scripts/migrate-legacy.sh [--legacy-dir DIR] [--suffix YYYYMMDD] [--keep-dashboard-password]
 #                             [--prepare-only | --dry-run] [--no-auto-rollback] [--yes]
 #   scripts/migrate-legacy.sh --rollback [--yes]
 #   scripts/migrate-legacy.sh --status
@@ -16,12 +16,14 @@
 #   --container NAME   the legacy container (default: woow-emqx)
 #   --suffix S         the legacy container becomes <name>-legacy-S (default: today). Used on
 #                      the rename path only; see "Rollback shape" below.
-#   --reset-dashboard-password
-#                      after the cutover, set the dashboard admin password to the value of the
-#                      woow-emqx-dashboard-password secret. Off by default: EMQX seeds
-#                      EMQX_DASHBOARD__DEFAULT_PASSWORD only into an *empty* data volume, so on
-#                      an adopted volume the secret is inert and the old password still works.
-#                      The mismatch is reported either way.
+#   --keep-dashboard-password
+#                      leave the dashboard admin password as the legacy one. By default the cutover
+#                      sets it to the value of the woow-emqx-dashboard-password secret, because EMQX
+#                      seeds EMQX_DASHBOARD__DEFAULT_PASSWORD only into an *empty* data volume: on
+#                      an adopted volume the generated secret is inert, the old password is still in
+#                      force, and tests/smoke.sh check A4 (log in with the recorded secret) fails.
+#                      With --keep-dashboard-password the cutover skips smoke's A4 instead and says
+#                      how to align them later.
 #   --prepare-only     steps 1-2 only, no downtime: checks, hot backup, and the rollback copy
 #   --dry-run          step 1 plus a render of the units; changes nothing
 #   --no-auto-rollback leave a failed cutover in place for inspection
@@ -65,21 +67,21 @@ LEGACY_NETWORK=woow_emqx_network
 NODE_NAME=emqx@127.0.0.1
 UNIT=emqx.service
 
-mode=migrate legacy_dir=$HOME/Woow_podman_emqx container=woow-emqx suffix=$(date +%Y%m%d)
-reset_dash=0 auto_rollback=1 yes=0
+mode=migrate legacy_dir=$HOME/Woow_podman_emqx container=woow-emqx suffix=$(date +%Y%m%d) dash_aligned=0
+keep_dash=0 auto_rollback=1 yes=0
 while (($#)); do
   case $1 in
     --legacy-dir) legacy_dir=${2:?--legacy-dir needs a directory}; shift ;;
     --container) container=${2:?--container needs a name}; shift ;;
     --suffix) suffix=${2:?--suffix needs a value}; shift ;;
-    --reset-dashboard-password) reset_dash=1 ;;
+    --keep-dashboard-password) keep_dash=1 ;;
     --prepare-only) mode=prepare ;;
     --dry-run) mode=dry-run ;;
     --no-auto-rollback) auto_rollback=0 ;;
     --rollback) mode=rollback ;;
     --status) mode=status ;;
     --yes) yes=1 ;;
-    -h | --help) sed -n '2,46p' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,48p' "$0"; exit 0 ;;
     *) ql_die "unknown option $1 (see --help)" ;;
   esac
   shift
@@ -110,6 +112,17 @@ unit_exists() { [[ -n $(systemctl --user show -p FragmentPath --value "$1" 2>/de
 quadlet_installed() { [[ -s $APP_STATE_DIR/manifest ]] && unit_exists "$UNIT"; }
 running() { [[ $(podman inspect --format '{{.State.Status}}' "$1" 2>/dev/null) == running ]]; }
 now_s() { date +%s; }
+
+# set_dashboard_password: put the woow-emqx-dashboard-password secret into the broker's own user
+# database. The value goes in over stdin and is read by a shell inside the container, so it never
+# appears in this host's process list.
+set_dashboard_password() {
+  local pw
+  pw=$(app_secret_read woow-emqx-dashboard-password) || return 1
+  [[ -n $pw ]] || return 1
+  printf '%s' "$pw" | podman exec -i "$container" sh -c \
+    'read -r p; emqx ctl admins passwd admin "$p" >/dev/null' 2>/dev/null
+}
 
 # =============================================================================================
 # 6. rollback
@@ -385,7 +398,25 @@ if ((!failed)); then
   done
   mounts_now=$(mounts_of "$container")
   grep -qx "$DATA_VOLUME|/opt/emqx/data" <<<"$mounts_now" || { ql_warn "the new container does not mount $DATA_VOLUME"; failed=1; }
-  ((failed)) || "$REPO/tests/smoke.sh" || failed=1
+  # EMQX seeds EMQX_DASHBOARD__DEFAULT_PASSWORD only into an empty data volume, so on an adopted one
+  # the generated secret never reached the broker and the legacy password is still in force. Align
+  # them here, before tests/smoke.sh checks exactly that (its A4).
+  smoke=("$REPO/tests/smoke.sh")
+  if ((failed == 0)); then
+    if ((keep_dash)); then
+      ql_warn "--keep-dashboard-password: the dashboard admin password is still the legacy one and does not match the woow-emqx-dashboard-password secret. Align them later with: podman exec $container emqx ctl admins passwd admin <new>"
+      ql_warn "skipping the MQTT and dashboard-login part of tests/smoke.sh (its A4 would fail on that mismatch); run tests/smoke.sh by hand once the passwords agree"
+      smoke=("$REPO/tests/smoke.sh" --quick --no-mqtt)
+      dash_aligned=0
+    elif set_dashboard_password; then
+      ql_info "the dashboard admin password now matches the woow-emqx-dashboard-password secret"
+      dash_aligned=1
+    else
+      ql_warn "could not set the dashboard admin password; the legacy one is still in force"
+      failed=1
+    fi
+  fi
+  ((failed)) || "${smoke[@]}" || failed=1
 fi
 if ((failed)); then
   if ((auto_rollback)); then
@@ -406,17 +437,8 @@ state_set DOWNTIME_S "$downtime"
 state_set DONE_AT "$(date -Is)"
 state_set STATUS "done"
 ql_info "measured downtime: ${downtime}s (from 'podman stop $container' to the Quadlet broker answering)"
-
-if ((reset_dash)); then
-  pw=$(app_secret_read woow-emqx-dashboard-password)
-  if [[ -n $pw ]] && podman exec "$container" emqx ctl admins passwd admin "$pw" >/dev/null 2>&1; then
-    ql_info "the dashboard admin password now matches the woow-emqx-dashboard-password secret"
-  else
-    ql_warn "could not set the dashboard password; the legacy one is still in force"
-  fi
-  unset pw
-else
-  ql_warn "the dashboard admin password is still the legacy one: EMQX seeds EMQX_DASHBOARD__DEFAULT_PASSWORD only into an empty data volume, so the woow-emqx-dashboard-password secret is inert on this adopted volume. Re-run with --reset-dashboard-password, or change it with: podman exec $container emqx ctl admins passwd admin <new>"
+if ((dash_aligned)); then
+  ql_info "dashboard: user admin, password = podman secret inspect --showsecret --format '{{.SecretData}}' woow-emqx-dashboard-password"
 fi
 
 if [[ $STRATEGY == capture ]]; then
