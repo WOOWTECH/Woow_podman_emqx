@@ -286,6 +286,7 @@ tests/smoke.sh           在主機上的安裝後檢查
 tests/lint-repo.sh       憑證掃描、compose 移除、README 與 EMQX 不變條件（CI）
 tests/rollback-model.sh  以 tests/shims 驗證回復模型與沿用驗證（CI）
 tests/shims/             podman 與 systemctl 測試替身；不會建立任何容器
+docs/migration-rehearsal-toypark1234.md   遷移端對端預演的實際輸出
 ```
 
 開發檢查（全為靜態，不啟動容器）：`bash tests/dryrun.sh`、`shellcheck -x scripts/*.sh tests/*.sh`、

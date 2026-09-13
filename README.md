@@ -313,6 +313,7 @@ tests/smoke.sh           post-install checks on a host
 tests/lint-repo.sh       credential scan, compose removal, README and EMQX invariants (CI)
 tests/rollback-model.sh  the rollback model and the adoption proof, against tests/shims (CI)
 tests/shims/             podman and systemctl doubles; no container is ever created
+docs/migration-rehearsal-toypark1234.md   output of the end-to-end rehearsal of the migration
 ```
 
 Development checks, all static, no containers: `bash tests/dryrun.sh`,
