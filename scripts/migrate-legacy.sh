@@ -278,7 +278,23 @@ else ql_warn "no legacy checkout at $legacy_dir; its .env and compose files will
 fi
 
 if [[ $mode == dry-run ]]; then
-  "$REPO/scripts/install.sh" --dry-run "${sets[@]/#/--set=}" >&2 \
+  # Render and validate against a scratch env file rather than calling install.sh --dry-run: that
+  # would create and edit ~/.config/emqx/emqx.env (ql_env_ensure and --set are not dry-run aware),
+  # and a --dry-run that writes to the host is not a dry run.
+  WORK=$(mktemp -d "${TMPDIR:-/tmp}/$APP-migrate.XXXXXX")
+  trap 'rm -rf "$WORK"' EXIT
+  mkdir -p "$WORK/src" "$WORK/out/config"
+  if [[ -f $ENV_FILE ]]; then cp -p -- "$ENV_FILE" "$WORK/$APP.env"; else install -m 600 -- "$ENV_EXAMPLE" "$WORK/$APP.env"; fi
+  for kv in "${sets[@]}"; do ql_env_set "$WORK/$APP.env" "${kv%%=*}" "${kv#*=}"; done
+  QL_ENV_MODE_CHECK=0 ql_env_load "$WORK/$APP.env"
+  cp -p "$REPO"/quadlet/*.container "$REPO"/quadlet/*.volume "$REPO"/quadlet/*.network "$WORK/src/"
+  RENDER_ARGS=()
+  # shellcheck source=render-args.sh
+  . "$REPO/scripts/render-args.sh"
+  render_args "$WORK/$APP.env"
+  ql_render "$WORK/src" "$WORK/$APP.env" "$REPO/quadlet/render-vars" "$WORK/out" "${RENDER_ARGS[@]}"
+  cp -p "$REPO/config/base.hocon" "$WORK/out/config/base.hocon"
+  ql_dryrun "$WORK/out" --verify --ref-dir "$HOME/.config/containers/systemd" \
     || ql_die "the units do not render for this host; nothing was changed"
   if [[ $STRATEGY == capture ]]; then
     commit_note=without
