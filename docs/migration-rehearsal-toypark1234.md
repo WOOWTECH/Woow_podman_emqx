@@ -187,9 +187,16 @@ rc=0
 
    and held for as long as the container runs. Two of toypark's twelve app locks were held that way
    (`emqx` and `odoo18`), so this is not specific to this repo. The worst consequence is that
-   `--rollback` is refused. The vendored library is not edited (decision D8); everything in this
-   repo's migration that can start a container goes through `app_unlocked`, which closes the
+   `--rollback` is refused. The vendored library was not edited (decision D8); everything in this
+   repo's migration that could start a container went through `app_unlocked`, which closed the
    descriptor for that command. **The real fix belongs in quadlet-lib.**
+
+   **Fixed upstream.** quadlet-lib 1.5.0 removes the descriptor altogether: the lock is now the
+   directory `<state>/<app>/lock.d` holding an owner record of boot id, pid and pid start time, and
+   "held" means that owner is still running, so a crashed lock is taken over rather than waited on.
+   `QL_LOCK_FD` remains only as an always-empty variable, which makes `app_unlocked` a no-op, so the
+   wrapper and its call sites are gone from this branch and the tests below pin 1.5.0's contract
+   instead of the wrapper. See "Re-rehearsed against quadlet-lib 1.5.0".
 
 ## Cleanup
 
@@ -210,31 +217,85 @@ throughout and no `podman stop -a`, `system prune`, `system reset` or `volume pr
 every removal named its object. The pre-existing stray network `podman_default` was left exactly as
 found.
 
+## Re-rehearsed against quadlet-lib 1.5.0
+
+The whole rehearsal above was run again on toypark1234 on 2026-09-14 after `main` moved to
+quadlet-lib 1.5.0 and `app_unlocked` was removed, because the lock change touches exactly the path
+the rehearsal exercises. Same shape: this repo's `compose-final` tag in `~/p6-rebase-emqx` with the
+`restart: always` overlay, openclaw's object names, the same isolated high ports, and the same
+`systemctl is-enabled` shim to reach the capture path on a host whose `podman-restart.service` is
+genuinely disabled.
+
+```
+woow-emqx|Up 37 seconds (healthy)|docker.io/emqx/emqx:5.8.9
+policy=always project=woow_podman_emqx   SizeRw=11294
+--dry-run without the shim -> rename ; with the shim -> capture and remove
+--prepare-only: both volumes exported, container captured, dashboard still HTTP 200
+cutover      : volumes adopted in place (inode 1352576 / 1354172 unchanged), 10 passed 0 failed,
+               measured downtime 42s
+--rollback   : recreated woow-emqx with restart policy always, dashboard 200, 15s, units gone
+forward again: 10 passed 0 failed, downtime 42s
+third run    : "already migrated ... Nothing to do", rc=0
+```
+
+The point of the re-run was the lock, and it is the one thing that behaves differently:
+
+```
+--- lock state after every stage ---
+lock.d absent ; processes holding an fd into the emqx state dir: NONE
+```
+
+Under 1.4.0 this directory's predecessor was held open by `conmon` and `rootlessport` for the life
+of the container, which is what refused `--rollback`. There is now no descriptor to inherit, and
+`--rollback` ran from a separate invocation with the new broker still up.
+
+One thing the new contract makes visible: `scripts/migrate-legacy.sh` sets `trap 'rm -rf "$WORK"'
+EXIT` after it has taken the lock, which replaces the release handler `ql_lock` chained onto that
+trap, so the lock directory is left behind on the `--dry-run` / `--prepare-only` paths and the next
+run reports
+
+```
+WARNING: emqx: taking over the lock left behind by pid 1886000, which is no longer running
+```
+
+That is 1.5.0 working as designed (a dead owner is taken over, never waited on) and it blocks
+nothing, but it is noise: `scripts/install.sh` has the same lock-then-`trap` ordering. Setting the
+trap before the lock, or adding `ql_unlock` to the trap body, would remove the warning. Left as is
+here because `install.sh`'s ordering is main's, not this branch's.
+
 ## Tests
 
-`tests/rollback-model.sh`: **22 passed, 0 failed**, and all 22 were red-checked — each test was
-re-run against a deliberately broken copy of the code it pins and had to fail. The exercise found a
-weak test (it matched the script's header comment rather than a call site) and that test was
-tightened.
+`tests/rollback-model.sh` after the 1.5.0 merge. The six lock tests replace
+`t_app_unlocked_closes_the_inherited_lock_descriptor` (which asserted that `ql_lock` publishes
+`QL_LOCK_FD` and that a plain child inherits the descriptor - both false by design in 1.5.0, so it
+failed on the new main) and `t_everything_that_starts_a_container_runs_through_app_unlocked`. Each
+of the six was red-checked against a deliberately broken copy of the library: `QL_LOCK_FD`
+republished, a dead owner treated as alive, a live owner treated as dead, `QL_LOCK_HELD` not
+published, and the lock never released. All six had to fail, and the last of those reproduced the
+original error verbatim - `another install/upgrade/uninstall of emqx is running`.
 
 ```
 $ bash tests/rollback-model.sh
+ok    t_a_child_script_reuses_the_lock_its_caller_holds
 ok    t_a_container_from_another_compose_project_is_refused
 ok    t_a_container_that_grew_a_writable_layer_is_committed
 ok    t_a_container_with_no_compose_label_is_warned_about_not_refused
+ok    t_a_crashed_run_does_not_block_the_lock_for_ever
+ok    t_a_rollback_can_take_the_lock_after_an_earlier_run_left_processes_behind
+ok    t_a_second_live_run_is_still_refused
 ok    t_always_policy_with_a_disabled_unit_is_still_rename
 ok    t_an_unmeasurable_writable_layer_warns_instead_of_committing_silently
-ok    t_app_unlocked_closes_the_inherited_lock_descriptor
 ok    t_capture_is_idempotent_between_prepare_only_and_the_cutover
 ok    t_capture_refuses_a_container_the_library_cannot_replay
 ok    t_disabled_restart_unit_keeps_the_rename_path
 ok    t_emqx_writable_layer_is_too_small_to_commit
 ok    t_enabled_restart_unit_and_always_policy_takes_the_capture_path
-ok    t_everything_that_starts_a_container_runs_through_app_unlocked
 ok    t_migrate_legacy_asks_the_host_instead_of_refusing
+ok    t_no_1_4_0_lock_workaround_survives_in_the_scripts
 ok    t_retire_refuses_to_remove_without_a_capture
 ok    t_the_capture_is_taken_before_any_downtime
 ok    t_the_capture_path_never_removes_the_volumes
+ok    t_the_lock_keeps_no_descriptor_for_a_child_to_inherit
 ok    t_the_migration_checks_the_project_label_before_touching_anything
 ok    t_the_rollback_recreates_the_captured_broker_with_restart_policy_always
 ok    t_the_units_adopt_the_compose_era_names
@@ -242,5 +303,5 @@ ok    t_volume_identity_changes_when_the_volume_is_not_the_same_one
 ok    t_volume_identity_fails_loudly_for_a_volume_that_is_gone
 ok    t_volume_identity_is_mountpoint_createdat_and_inode
 
-22 passed, 0 failed
+26 passed, 0 failed
 ```
