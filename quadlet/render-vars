@@ -1,0 +1,8 @@
+# Variables that scripts/install.sh may substitute into the units (@@NAME@@). All of them are
+# computed by scripts/render-args.sh from the WOOW_EMQX_* knobs in ~/.config/emqx/emqx.env.
+EMQX_PUBLISH_MQTT
+EMQX_PUBLISH_MQTTS
+EMQX_PUBLISH_WS
+EMQX_PUBLISH_WSS
+EMQX_PUBLISH_DASHBOARD
+EMQX_NGROK_ARGS

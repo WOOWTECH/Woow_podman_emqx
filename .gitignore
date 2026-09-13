@@ -1,18 +1,17 @@
-# Environment file (contains passwords)
+# Per-host settings live in ~/.config/emqx/ and credentials in podman secrets; neither belongs here.
 .env
+*.env
+!config/*.env.example
+!tests/fixtures/*.env
 
-# Docker/Podman volumes
-emqx_data/
-emqx_log/
+# Backups and partial files
+*.tar
+*.tar.gz
+*.partial
+*.bak
 
-# OS files
+# OS / editor files
 .DS_Store
 Thumbs.db
-
-# IDE
 .vscode/
 .idea/
-
-# Backup files
-*.tar.gz
-*.bak

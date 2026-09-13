@@ -1,0 +1,35 @@
+# Optional ngrok TCP tunnel for raw MQTT (1883). Installed only while WOOW_EMQX_NGROK=1
+# (scripts/install.sh --with-ngrok). It publishes the broker to the internet, which is acceptable only
+# because anonymous access is off; install.sh stops this unit if the anonymous-MQTT smoke check fails.
+# Public URL: scripts/ngrok-url.sh (reads "url=tcp://" from this unit's journal).
+[Unit]
+Description=Woow EMQX ngrok TCP tunnel (optional)
+Documentation=https://github.com/WOOWTECH/Woow_podman_emqx
+Requires=emqx.service
+After=emqx.service
+PartOf=emqx.service
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Container]
+ContainerName=woow-emqx-ngrok
+Image=docker.io/ngrok/ngrok:3.39.11-debian@sha256:cafcc30231c5704e87e3dd7274844cf4760381642d7737c1e58730863e7e1d85
+Network=emqx.network
+HostName=emqx-ngrok
+Label=io.woowtech.stack=emqx
+Secret=woow-emqx-ngrok-authtoken,type=env,target=NGROK_AUTHTOKEN
+# Address the broker by container name: aardvark-dns resolves container names, not HostName=.
+# The token below adds --remote-addr=<addr> when WOOW_EMQX_NGROK_REMOTE_ADDR is set.
+Exec=tcp woow-emqx:1883 --log stdout@@EMQX_NGROK_ARGS@@
+NoNewPrivileges=true
+
+[Service]
+# A container stopped by systemd is stopped with SIGTERM: an entrypoint that does not
+# trap it exits 143 (128+15), which would leave the unit failed after a clean stop.
+SuccessExitStatus=143
+Restart=on-failure
+RestartSec=15
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target

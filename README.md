@@ -1,453 +1,271 @@
-# EMQX MQTT Broker — Docker / Podman Deployment
+# EMQX MQTT broker on rootless Podman (Quadlet + systemd)
 
-One-click deployment of **EMQX MQTT Broker** using Docker Compose or Podman Compose.
-EMQX is the world's leading open-source distributed MQTT broker, designed for IoT,
-M2M and mobile applications and capable of handling millions of concurrent
-connections.
+[繁體中文](README_zh-TW.md)
 
-Parity with the WoowTech HA add-on [`Woow_ha_emqx`](https://github.com/WOOWTECH/Woow_ha_emqx)
-v5.9.0 — same EMQX version (`5.8.9`), same optional ngrok TCP tunnel behavior.
+This repo runs the **EMQX 5.8.9** MQTT broker as rootless Podman
+[Quadlet](https://docs.podman.io/en/v4.9.3/markdown/podman-systemd.unit.5.html) units under
+`systemd --user`. The broker starts at boot through linger, restarts when it crashes, and gets its
+per-host settings from one env file.
 
-[中文版說明見下方](#中文)
+Other platforms:
+[Woow_k3s_emqx](https://github.com/WOOWTECH/Woow_k3s_emqx) (Kubernetes / Helm) ·
+[Woow_ha_emqx](https://github.com/WOOWTECH/Woow_ha_emqx) (Home Assistant add-on)
 
-## Other deployment platforms | 其他部署平台
+> **Docker or podman-compose users:** release 6.0.0 removed the compose files. The last compose
+> version is kept at the tag
+> [`compose-final`](https://github.com/WOOWTECH/Woow_podman_emqx/tree/compose-final)
+> (`git clone -b compose-final https://github.com/WOOWTECH/Woow_podman_emqx.git`). That tag is not
+> maintained and keeps the old defaults: anonymous MQTT is accepted and the dashboard login is
+> `admin` / `public`. Change both before you use it.
 
-- **K3s / Kubernetes (Helm chart)** → [Woow_k3s_emqx](https://github.com/WOOWTECH/Woow_k3s_emqx)
-- **Home Assistant add-on** → [Woow_ha_emqx](https://github.com/WOOWTECH/Woow_ha_emqx)
+## What gets installed
 
----
+| Item | Name | Notes |
+|---|---|---|
+| Broker container | `woow-emqx` (unit `emqx.service`) | `docker.io/emqx/emqx:5.8.9`, pinned by digest |
+| Network | `woow_emqx_network` (unit `emqx-network.service`) | private bridge |
+| Volumes | `woow_emqx_data`, `woow_emqx_log` | the same names the compose stack used, so existing data is adopted |
+| Optional tunnel | `woow-emqx-ngrok` (unit `emqx-ngrok.service`) | only with `--with-ngrok` |
+| Settings | `~/.config/emqx/emqx.env` (0600), `~/.config/emqx/base.hocon` | created by `scripts/install.sh` |
+| Credentials | podman secrets `woow-emqx-*` | generated at install time; never stored in files |
 
-## English
+Security defaults:
 
-### Overview
+- **Anonymous MQTT is off.** `config/base.hocon` declares a built-in-database authenticator, and the
+  first MQTT user is seeded from a podman secret.
+- **The dashboard password is generated.** There is no `admin` / `public` login.
+- **Every port binds 127.0.0.1.** Set `WOOW_EMQX_BIND` for a LAN broker.
 
-Verified environments:
+> **Why anonymous access is off.** EMQX 5 has no allow-anonymous switch for MQTT. A client is treated
+> as anonymous whenever the authentication chain is empty, and the `EMQX_ALLOW_ANONYMOUS` variable
+> from the EMQX 4 era is silently ignored. So every earlier install of this repo accepted anonymous
+> clients, even with that variable set to `false`. Declaring one authenticator is what turns anonymous
+> access off.
 
-- **EMQX 5.8.9** (`docker.io/emqx/emqx:5.8.9`, matches HA add-on bundle)
-- **Podman 5.x** rootless on `podman-mcp.woowtech.io` (host `192.168.2.191`)
-- **Podman 4.9.3** + `podman-compose` 1.0.6
-- **Docker Compose v2.x** on Ubuntu / Linux
+## Requirements
 
-### Architecture
+- Linux with systemd and cgroup v2. Tested on Ubuntu 24.04.
+- Podman 4.9 or newer, rootless. Tested with 4.9.3, which is the version in Ubuntu 24.04.
+- A normal login session for the user who owns the containers (ssh or console, not `su` or `sudo -u`).
+- Linger for that user. `install.sh` enables it; when polkit refuses, it prints the one `sudo` command
+  to run.
+- Free ports: 1883, 8883, 8083, 8084, 18083. Each one can be moved.
+- About 250 MB of disk for the image and about 50 MB of RAM when idle.
 
-```
-┌────────────────────────────────────────────────┐
-│                EMQX Broker v5.8.9              │
-│  ┌────────────────────────────────────────────┐│
-│  │  MQTT TCP:       1883                      ││
-│  │  MQTT SSL/TLS:   8883                      ││
-│  │  WebSocket:      8083                      ││
-│  │  WebSocket SSL:  8084                      ││
-│  │  Dashboard UI:   18083                     ││
-│  └────────────────────────────────────────────┘│
-│  Volumes:                                      │
-│  ├── woow_emqx_data (config + runtime)         │
-│  └── woow_emqx_log  (logs)                     │
-└────────────────────────────────────────────────┘
-             ▲                       ▲
-             │ MQTT                  │ (optional)
-   ┌─────────┴─────────┐   ┌─────────┴──────────┐
-   │  IoT devices /    │   │  ngrok TCP tunnel  │
-   │  sensors          │   │  (profile: ngrok)  │
-   └───────────────────┘   └────────────────────┘
-```
-
-### Requirements
-
-| Item | Minimum |
-|------|---------|
-| Container engine | Docker 20.10+ or Podman 4.0+ |
-| Compose tool     | Docker Compose 2.0+ or `podman-compose` 1.0.6+ |
-| Memory           | 512 MB (1 GB+ recommended) |
-| Ports            | 1883, 8883, 8083, 8084, 18083 |
-
-### Project structure
-
-```
-Woow_podman_emqx/
-├── docker-compose.yml        # Compose service definition (EMQX only)
-├── docker-compose.ngrok.yml  # Overlay adding ngrok sidecar + announce (opt-in via -f)
-├── .env.example              # Environment variable template (copy to .env)
-├── .gitignore                # Excludes .env and other sensitive files
-├── README.md                 # This bilingual guide
-├── CHANGELOG.md              # Version history
-├── DEPLOY_SKILL.md           # AI rapid-deployment skill guide
-└── podman-quadlet/           # Systemd Quadlet units for `.191` rootless auto-start
-    ├── README.md
-    ├── emqx.network
-    ├── emqx.container
-    └── emqx-ngrok.container
-```
-
-### Quick start
+## Install
 
 ```bash
 git clone https://github.com/WOOWTECH/Woow_podman_emqx.git
 cd Woow_podman_emqx
-cp .env.example .env
-# Edit .env — at minimum change EMQX_DASHBOARD_PASSWORD
-
-# Docker
-docker compose up -d
-
-# or Podman
-podman-compose up -d
+scripts/install.sh               # first run: creates ~/.config/emqx/emqx.env and stops so you can review it
+nano ~/.config/emqx/emqx.env     # optional: bind address, ports, MQTT user name
+scripts/install.sh               # render, validate, pull, create secrets, start, run tests/smoke.sh
 ```
 
-Wait ~30 seconds for EMQX to boot, then verify:
+`install.sh` runs these steps in order. Nothing is installed until rendering and the Quadlet dry-run
+pass.
+
+1. Preflight checks, then linger.
+2. The env file.
+3. The legacy-container guard.
+4. Render the units, then run the Quadlet dry-run and `systemd-analyze verify`.
+5. Pull the images.
+6. Create the podman secrets.
+7. Install the units, and restart only the units that changed.
+8. Wait for the health check, then run `tests/smoke.sh`.
+
+Useful options:
+
+| Option | Effect |
+|---|---|
+| `--accept-defaults` | On the first run, keep going with the example settings instead of stopping. |
+| `--set KEY=VALUE` | Store a setting in the env file first. You can repeat it. Only keys from `config/emqx.env.example` are accepted, and credentials never are. |
+| `--with-ngrok` / `--without-ngrok` | Add or remove the ngrok tunnel. See [ngrok](#ngrok-tcp-tunnel-optional). |
+| `--dry-run` | Render and validate, and show what would change, without touching anything. |
+| `--no-start`, `--no-smoke` | Install without starting; skip the smoke test. |
+
+A non-interactive install on moved ports, for example on a host where the standard ports are taken:
 
 ```bash
-docker compose ps                        # STATUS: healthy
-docker exec woow-emqx emqx ctl status    # Node 'emqx@127.0.0.1' 5.8.9 is started
-curl -s -o /dev/null -w "%{http_code}" http://localhost:18083   # 200
+scripts/install.sh --set WOOW_EMQX_PORT_MQTT=21883 --set WOOW_EMQX_PORT_DASHBOARD=28083
 ```
 
-Open **http://localhost:18083** and log in with `admin` / `public` (or the
-password you set in `.env`).
+Running `install.sh` again is safe. With nothing changed, it restarts nothing.
 
-### ngrok TCP tunnel (optional)
+## Configure
 
-Expose raw MQTT (port 1883) as a public TCP tunnel via ngrok. Mirrors the
-HA add-on behavior:
+Edit `~/.config/emqx/emqx.env`, then run `scripts/install.sh` again. It re-renders the units and
+restarts the broker only when something it reads has changed.
 
-- **Only tunnels 1883** (raw MQTT). WebSocket (8083) is out of scope — use
-  Cloudflare Tunnel for that.
-- The `ngrok-announce` one-shot polls the local ngrok API and prints the
-  resolved public URL to `docker compose logs ngrok-announce`.
+| Key | Default | Meaning |
+|---|---|---|
+| `WOOW_EMQX_BIND` | `127.0.0.1` | Address the ports are published on: `127.0.0.1`, an IPv4 address of this host, or `all` (IPv4 and IPv6). |
+| `WOOW_EMQX_PORT_MQTT` | `1883` | MQTT over TCP |
+| `WOOW_EMQX_PORT_MQTTS` | `8883` | MQTT over TLS (EMQX's bundled self-signed certificate) |
+| `WOOW_EMQX_PORT_WS` / `_WSS` | `8083` / `8084` | MQTT over WebSocket / secure WebSocket |
+| `WOOW_EMQX_PORT_DASHBOARD` | `18083` | Dashboard and REST API |
+| `WOOW_EMQX_MQTT_USER` | `woow` | MQTT user seeded on first start |
+| `WOOW_EMQX_NGROK` | `0` | `1` runs the ngrok tunnel (set by `--with-ngrok`) |
+| `WOOW_EMQX_NGROK_REMOTE_ADDR` | empty | Reserved ngrok TCP address, for example `1.tcp.ngrok.io:12345` |
+| `EMQX_*` | | Any EMQX setting, passed to the broker unchanged (`EMQX_LOG__CONSOLE__LEVEL=info`, ...) |
 
-Setup:
+The env file must not hold credentials. `install.sh` refuses keys ending in `PASSWORD`, `SECRET`,
+`TOKEN` or `_KEY` that have a value.
+
+### Secrets
+
+| Podman secret | Used for | How it reaches EMQX |
+|---|---|---|
+| `woow-emqx-dashboard-password` | Dashboard user `admin` | env `EMQX_DASHBOARD__DEFAULT_PASSWORD`. EMQX reads it only on the first boot of an empty data volume. |
+| `woow-emqx-mqtt-password` | MQTT user `WOOW_EMQX_MQTT_USER` | Not mounted. It is the source of the bootstrap file below. |
+| `woow-emqx-mqtt-bootstrap` | Seeds the MQTT user | A 0400 file for the `emqx` user. EMQX imports it when the authenticator starts and never overwrites an existing user. |
+| `woow-emqx-ngrok-authtoken` | ngrok | env `NGROK_AUTHTOKEN` for the tunnel container, created with `--with-ngrok` only |
+
+Read a value in a private terminal:
 
 ```bash
-# 1. Fill in your ngrok authtoken in .env
-sed -i 's/^NGROK_AUTHTOKEN=$/NGROK_AUTHTOKEN=YOUR_TOKEN_HERE/' .env
-
-# 2. Optional: pin a reserved TCP address so the public endpoint survives restarts
-#    (Reserve one under https://dashboard.ngrok.com/cloud-edge/tcp-addresses,
-#    then edit docker-compose.ngrok.yml's `command:` to add
-#    `--remote-addr=1.tcp.ngrok.io:12345`. See the file for the exact line.)
-
-# 3. Bring up EMQX + ngrok + ngrok-announce (overlay both compose files)
-docker  compose -f docker-compose.yml -f docker-compose.ngrok.yml up -d
-podman-compose -f docker-compose.yml -f docker-compose.ngrok.yml up -d
-
-# 4. Read the public URL from the announce container
-docker compose logs ngrok-announce
-# >>> MQTT ngrok: tcp://1.tcp.ngrok.io:12345
+podman secret inspect --showsecret --format '{{.SecretData}}' woow-emqx-dashboard-password
 ```
 
-Turn it off:
+To rotate the dashboard password, change it in the Dashboard first (user menu > Change password),
+then update the recorded copy. `read -s` and `printf` keep the value out of your shell history and
+out of any process's arguments:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.ngrok.yml down
-# or just remove ngrok while keeping EMQX
-docker compose rm -sf ngrok ngrok-announce
+read -rs -p 'new dashboard password: ' p; printf '%s' "$p" | podman secret create --replace woow-emqx-dashboard-password -; unset p
 ```
 
-> **Why an overlay file instead of `--profile ngrok`?** `podman-compose 1.0.6`
-> ignores compose profiles and starts profiled services unconditionally, so the
-> ngrok container would crash-loop when `NGROK_AUTHTOKEN` is empty. The overlay
-> pattern behaves identically under `docker compose` and `podman-compose`.
+To rotate the MQTT password, change it in the Dashboard (Authentication > Built-in Database > Users),
+then replace `woow-emqx-mqtt-password` the same way and run `scripts/install.sh`. The bootstrap file
+is updated too. The import never overwrites an existing user, so the Dashboard change is what counts.
 
-### Deploy on `podman-mcp.woowtech.io` (host `192.168.2.191`) — rootless
+## Connect
 
-This host runs rootless podman as `woowtech-ai-coder` (uid 1000) with
-`systemd --user` and `loginctl enable-linger` on. Two integration options:
+- **Dashboard:** `http://127.0.0.1:18083/`, user `admin`, password from the secret above. From
+  another machine, use `ssh -L 18083:127.0.0.1:18083 <host>`, the Cloudflare tunnel, or NPM.
+- **MQTT test** with the seeded user. The password goes through a 0600 options file, not the
+  command line:
 
-**Option A — `podman-compose` on demand (quickest):**
+  ```bash
+  mkdir -p -m 700 ~/.config/woow-mqtt
+  (umask 077; printf -- '-u woow\n-P %s\n' \
+    "$(podman secret inspect --showsecret --format '{{.SecretData}}' woow-emqx-mqtt-password)" >~/.config/woow-mqtt/mosquitto_pub)
+  XDG_CONFIG_HOME=~/.config/woow-mqtt mosquitto_pub -h 127.0.0.1 -p 1883 -t test/topic -m hello
+  ```
+
+- **Anonymous clients are refused** with `Connection Refused: not authorised`. That is expected. To
+  deliberately allow anonymous access on a closed network, disable the authenticator in the Dashboard.
+  The change is stored in `cluster.hocon`, which outranks `base.hocon`.
+- **Check everything:** `tests/smoke.sh` (use `--quick` to skip the MQTT client checks).
+
+## ngrok TCP tunnel (optional)
+
+This tunnel publishes raw MQTT (1883) on the internet. It is safe only because authentication is
+enforced, and `install.sh` stops the tunnel whenever the smoke test fails.
 
 ```bash
-ssh woowtech-ai-coder@192.168.2.191
-git clone https://github.com/WOOWTECH/Woow_podman_emqx.git ~/Woow_podman_emqx
-cd ~/Woow_podman_emqx
-cp .env.example .env && nano .env   # set EMQX_DASHBOARD_PASSWORD
-podman-compose up -d
+NGROK_AUTHTOKEN=<your-token> scripts/install.sh --with-ngrok   # or omit the variable and type it at the hidden prompt
+scripts/ngrok-url.sh                                           # tcp://N.tcp.ngrok.io:PORT
+scripts/install.sh --without-ngrok                             # remove the tunnel again
 ```
 
-**Option B — systemd Quadlet auto-start (survives reboot):**
+For a stable address, reserve one in the ngrok dashboard and set `WOOW_EMQX_NGROK_REMOTE_ADDR`.
+WebSocket (8083) is not tunneled; use the Cloudflare tunnel for that.
 
-Copy the four unit files under `podman-quadlet/` into
-`~/.config/containers/systemd/`, then `systemctl --user daemon-reload`.
-Full instructions and env-file templates: [`podman-quadlet/README.md`](podman-quadlet/README.md).
+## Upgrade
 
-Known rootless-podman gotchas on this host (from prior deploys):
-
-1. Registry qualifier is mandatory — `unqualified-search-registries` may not
-   include Docker Hub. All images in `docker-compose.yml` use the explicit
-   `docker.io/...` prefix.
-2. Ports 1883/8883/8083/8084/18083 are all >1024 → no `cap_net_bind_service`
-   needed. Ports <1024 would require `sysctl net.ipv4.ip_unprivileged_port_start=X`.
-3. Rootless podman cannot bind to the host's default `127.0.0.1` interface if
-   another user's container already holds the port — check with
-   `ss -tlnp` before `up`.
-
-### Deploy to Portainer
-
-Deploy this project instantly using Portainer's Stack feature with our GitHub
-repository URL.
-
-[![Deploy to Portainer](https://img.shields.io/badge/Deploy_to-Portainer-13BEF9?style=for-the-badge&logo=portainer&logoColor=white)](#deploy-to-portainer)
-
-#### Via Git Repository (recommended)
-
-1. Log in to your Portainer dashboard
-2. Navigate to **Stacks** → **Add stack**
-3. Select **Repository**
-4. Fill in the following:
-
-   | Field | Value |
-   |-------|-------|
-   | **Repository URL** | `https://github.com/WOOWTECH/Woow_podman_emqx` |
-   | **Repository reference** | `refs/heads/main` |
-   | **Compose path** | `docker-compose.yml` |
-
-5. Click **Deploy the stack**
-
-> Note: Portainer's Stack feature does **not** currently pass compose profiles.
-> The ngrok sidecar (`--profile ngrok`) must be enabled from CLI, not
-> Portainer UI.
-
-### Key environment variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `EMQX_VERSION`             | `5.8.9`  | EMQX image tag (aligned with HA add-on) |
-| `EMQX_DASHBOARD_USER`      | `admin`  | Dashboard username |
-| `EMQX_DASHBOARD_PASSWORD`  | `public` | Dashboard password (**change this**) |
-| `EMQX_DASHBOARD_PORT`      | `18083`  | Dashboard web UI port |
-| `MQTT_TCP_PORT`            | `1883`   | Plain MQTT |
-| `MQTT_SSL_PORT`            | `8883`   | MQTT over TLS |
-| `MQTT_WS_PORT`             | `8083`   | MQTT over WebSocket |
-| `MQTT_WSS_PORT`            | `8084`   | MQTT over Secure WebSocket |
-| `EMQX_HOST`                | `127.0.0.1` | Node host / IP (cluster mode) |
-| `EMQX_ALLOW_ANONYMOUS`     | `true`   | Allow anonymous MQTT clients |
-| `NGROK_AUTHTOKEN`          | *(empty)* | Required when `docker-compose.ngrok.yml` overlay is used |
-| `COMPOSE_PROJECT_NAME`     | `woow`   | Prefix for container / volume / network names |
-
-### Port reference
-
-| Port  | Protocol       | Purpose                    |
-|-------|----------------|----------------------------|
-| 1883  | MQTT TCP       | Standard MQTT connection   |
-| 8883  | MQTT SSL       | TLS-encrypted MQTT         |
-| 8083  | WebSocket      | MQTT over WebSocket        |
-| 8084  | WebSocket SSL  | MQTT over WSS              |
-| 18083 | HTTP           | Dashboard management UI    |
-
-### Common operations
+The image versions are pinned in this repo. To upgrade, pull the repo and run the upgrade script:
 
 ```bash
-# Service management
-docker compose up -d
-docker compose down
-docker compose restart
-docker compose logs -f emqx
-
-# EMQX management
-docker compose exec emqx emqx ctl status
-docker compose exec emqx emqx ctl clients list
-docker compose exec emqx emqx ctl topics list
-docker compose exec emqx emqx ctl cluster status
+git pull
+scripts/upgrade.sh            # add --cold before an EMQX major-version upgrade
 ```
 
-> **Podman users**: replace `docker compose` with `podman-compose` and
-> `docker exec` with `podman exec`.
+`upgrade.sh` does the following:
 
-### MQTT connectivity test
+1. Takes a backup.
+2. Saves the installed units.
+3. Runs `install.sh`, which pulls the new images before touching any unit.
+4. Runs the smoke test.
+
+If step 3 or 4 fails, it puts the previous units back and restarts the broker on the previous image.
+Data that a newer EMQX has already migrated is not rolled back automatically. Restore the pre-upgrade
+backup with `restore.sh` if you have to go back across a major version.
+
+## Backup and restore
 
 ```bash
-# Install mosquitto client tools
-sudo apt install mosquitto-clients   # Debian / Ubuntu
-brew install mosquitto               # macOS
-apk add mosquitto-clients            # Alpine
-
-# Terminal 1: subscribe
-mosquitto_sub -h localhost -p 1883 -t "test/topic" -v
-
-# Terminal 2: publish
-mosquitto_pub -h localhost -p 1883 -t "test/topic" -m "Hello EMQX!"
-
-# With authentication (once anonymous is disabled)
-mosquitto_sub -h localhost -p 1883 -t "test/#" -u "user" -P "pass" -v
+scripts/backup.sh             # hot: emqx ctl data export (config, users, rules, retained messages)
+scripts/backup.sh --cold      # plus a full export of the woow_emqx_data volume (brief downtime)
+scripts/restore.sh --archive ~/.local/share/woow-backups/emqx/backup-<ts>/emqx-export-<...>.tar.gz --confirm-restore emqx
+scripts/restore.sh --archive ~/.local/share/woow-backups/emqx/backup-<ts>/woow_emqx_data-<ts>.tar --confirm-restore emqx
 ```
 
-### Persistence
+Backups go to `~/.local/share/woow-backups/emqx/`: files are 0600, directories 0700, with a
+`SHA256SUMS` file. A logical export is imported into the running broker. A volume export replaces
+the data volume after a pre-restore copy is taken.
 
-Data is stored in named volumes and survives container removal:
-
-- `woow_emqx_data` — configuration, rule engine, authentication data
-- `woow_emqx_log` — runtime logs
-
-(Volume names are prefixed by `COMPOSE_PROJECT_NAME`; default `woow`.)
-
-Backup / restore:
+## Uninstall
 
 ```bash
-# Backup
-docker run --rm -v woow_emqx_data:/data -v $(pwd):/backup alpine \
-  tar czf /backup/emqx_data_backup.tar.gz /data
-
-# Restore
-docker run --rm -v woow_emqx_data:/data -v $(pwd):/backup alpine \
-  tar xzf /backup/emqx_data_backup.tar.gz -C /
+scripts/uninstall.sh                 # remove the units; keep volumes, network, secrets, settings and backups
+scripts/uninstall.sh --purge         # also delete volumes, network, secrets and ~/.config/emqx (asks you to type "emqx")
 ```
 
-### Complete removal
+`--purge` is the only command that deletes data, and it takes a final backup of the data volume and
+the env file first. Images and backups are never deleted.
 
-```bash
-docker compose down       # keeps volumes
-docker compose down -v    # removes volumes as well
+## Migrating an existing compose deployment
+
+The Quadlet units use the compose names (container `woow-emqx`, volumes `woow_emqx_data` and
+`woow_emqx_log`, network `woow_emqx_network`, node name `emqx@127.0.0.1`), so the migration adopts the
+data in place.
+
+1. **Back up.** Run `podman exec woow-emqx emqx ctl data export` and copy the file out. Also run
+   `podman volume export woow_emqx_data -o woow_emqx_data.tar` and save
+   `podman inspect woow-emqx > legacy-inspect.json`.
+2. **Seed the secrets from the old `.env`** so the recorded copies match reality. Pipe them in; never
+   echo them.
+   - `grep '^EMQX_DASHBOARD_PASSWORD=' .env | cut -d= -f2- | tr -d '\n' | podman secret create woow-emqx-dashboard-password -`
+   - Do the same for the MQTT user's password into `woow-emqx-mqtt-password`, and set
+     `WOOW_EMQX_MQTT_USER`.
+3. **Remove the compose container:** `podman stop woow-emqx && podman rm woow-emqx`.
+   - If it was started with `restart: always`, do not just rename it. With `podman-restart.service`
+     enabled it would start again at every boot and fight for the ports, and podman 4.9 cannot change
+     a container's restart policy.
+   - Otherwise, `install.sh` refuses to replace a container it does not manage and prints a
+     `podman rename` command. You can keep the old container that way for rollback.
+4. **Install:** `scripts/install.sh`, then `tests/smoke.sh`. A dashboard or Dashboard-created
+   authenticator in the volume's `cluster.hocon` outranks `base.hocon`, so the existing users and
+   settings stay.
+5. **Roll back if needed:** `scripts/uninstall.sh`, then start the old compose project again from
+   the `compose-final` checkout. Both paths use the same volumes.
+
+## Files
+
+```
+quadlet/                 Quadlet units with @@VAR@@ tokens; quadlet/render-vars lists the allowed variables
+quadlet/optional/        the ngrok tunnel unit
+config/emqx.env.example  template for ~/.config/emqx/emqx.env
+config/base.hocon        authenticator defaults, installed to ~/.config/emqx/base.hocon
+scripts/                 install, upgrade, uninstall, backup, restore, ngrok-url
+scripts/render-args.sh   values computed from the env file (shared by install.sh and tests/dryrun.sh)
+scripts/lib/             vendored quadlet-lib (do not edit; CI checks its hash)
+tests/dryrun.sh          render + Quadlet 4.9.3 dry-run + systemd-analyze verify (CI and local)
+tests/smoke.sh           post-install checks on a host
+tests/lint-repo.sh       credential scan, compose removal, README and EMQX invariants (CI)
 ```
 
-### Production notes
+Development checks, all static, no containers: `bash tests/dryrun.sh`,
+`shellcheck -x scripts/*.sh tests/*.sh`, `tests/lint-repo.sh`.
 
-1. Change `EMQX_DASHBOARD_PASSWORD` to a strong password.
-2. Set `EMQX_ALLOW_ANONYMOUS=false` and configure authentication in the Dashboard.
-3. Configure TLS certificates for port 8883.
-4. Restrict ports at the firewall to trusted IPs — the default binds `0.0.0.0`
-   (LAN-reachable). For lockdown, prefix each port with `127.0.0.1:` in `.env`.
-5. Schedule regular backups of `woow_emqx_data`.
-6. Add `deploy.resources.limits` in `docker-compose.yml` if needed.
+## Troubleshooting
 
-### Troubleshooting
-
-| Problem | Likely cause | Fix |
-|---------|--------------|-----|
-| Container keeps restarting | Port in use | `ss -tlnp \| grep -E '1883\|8883\|8083\|8084\|18083'` |
-| Dashboard unreachable | Not ready yet | Wait 30 s, check `docker compose ps` for `healthy` |
-| MQTT refused | Service not running | Check container status and firewall |
-| Login fails | Stale data | `docker compose down -v && docker compose up -d` |
-| `ngrok` exits `ERR_NGROK_105` | Missing / invalid authtoken | Set `NGROK_AUTHTOKEN` in `.env` |
-| `ngrok-announce` prints timeout | ngrok tunnel not up in 120 s | Read `docker compose logs ngrok` for the real error |
-| Rootless podman: image pull `403` | Unqualified name resolved to `docker.io/library/...` | Images already use `docker.io/emqx/emqx` — check `/etc/containers/registries.conf` |
-
----
-
-## 中文
-
-### 簡介
-
-本專案提供使用 Docker Compose 或 Podman Compose 一鍵部署 **EMQX MQTT Broker**
-的方案。EMQX 是全球領先的開源分散式 MQTT 訊息代理，專為 IoT、M2M 與行動
-應用設計，可支援數百萬級並發連接。
-
-版本對齊 WoowTech HA add-on [`Woow_ha_emqx`](https://github.com/WOOWTECH/Woow_ha_emqx)
-v5.9.0 — 相同 EMQX 版本（`5.8.9`），相同的選配 ngrok TCP tunnel 行為。
-
-已驗證環境:
-
-- **EMQX 5.8.9** (`docker.io/emqx/emqx:5.8.9`)
-- **Podman 5.x** rootless on `podman-mcp.woowtech.io`（`192.168.2.191`）
-- **Podman 4.9.3** + `podman-compose` 1.0.6
-- **Docker Compose v2.x** on Ubuntu / Linux
-
-### 快速開始
-
-```bash
-git clone https://github.com/WOOWTECH/Woow_podman_emqx.git
-cd Woow_podman_emqx
-cp .env.example .env
-# 編輯 .env，至少修改 EMQX_DASHBOARD_PASSWORD
-
-docker compose up -d
-# 或 Podman
-podman-compose up -d
-```
-
-等待約 30 秒後開啟瀏覽器訪問 **http://localhost:18083**，以 `admin` / `public`
-（或你在 `.env` 中設定的密碼）登入。
-
-### ngrok TCP 通道（選用）
-
-把 raw MQTT（1883）透過 ngrok 開為公開 TCP 通道，並自動印出公開網址。
-對齊 HA add-on 行為：
-
-- **只 tunnel 1883**（raw MQTT）。WebSocket（8083）不在範圍內，請用 Cloudflare Tunnel。
-- `ngrok-announce` one-shot 容器會 poll 本地 ngrok API 並把 public URL 印到 log。
-
-啟用（疊加 `docker-compose.ngrok.yml` 這個 overlay 檔）：
-
-```bash
-# 1. 在 .env 填入 ngrok authtoken
-sed -i 's/^NGROK_AUTHTOKEN=$/NGROK_AUTHTOKEN=你的_token/' .env
-
-# 2. 選填：指定保留的 TCP 位址（重啟後端點才不會變）
-#    先到 https://dashboard.ngrok.com/cloud-edge/tcp-addresses 保留，
-#    然後編輯 docker-compose.ngrok.yml 的 command 加上：
-#    --remote-addr=1.tcp.ngrok.io:12345
-
-# 3. 啟動 EMQX + ngrok + ngrok-announce
-docker  compose -f docker-compose.yml -f docker-compose.ngrok.yml up -d
-podman-compose -f docker-compose.yml -f docker-compose.ngrok.yml up -d
-
-# 4. 從 announce 容器讀取 public URL
-docker compose logs ngrok-announce
-# >>> MQTT ngrok: tcp://1.tcp.ngrok.io:12345
-```
-
-關閉：
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.ngrok.yml down
-# 或保留 EMQX，只移除 ngrok
-docker compose rm -sf ngrok ngrok-announce
-```
-
-> **為什麼不用 `--profile ngrok`？** `podman-compose 1.0.6` 會忽略 `profiles:`
-> 並強制啟動所有 profile service，導致 ngrok 沒 token 時 crash-loop。overlay
-> 檔在 docker compose 與 podman-compose 兩邊都正常工作。
-
-### 部署到 `podman-mcp.woowtech.io`（`192.168.2.191`）— rootless
-
-該主機以 `woowtech-ai-coder`（uid 1000）跑 rootless podman、`systemd --user`
-+ `loginctl enable-linger`。兩種整合方式：
-
-**方式 A — 直接跑 `podman-compose`：**
-
-```bash
-ssh woowtech-ai-coder@192.168.2.191
-git clone https://github.com/WOOWTECH/Woow_podman_emqx.git ~/Woow_podman_emqx
-cd ~/Woow_podman_emqx
-cp .env.example .env && nano .env   # 設定 EMQX_DASHBOARD_PASSWORD
-podman-compose up -d
-```
-
-**方式 B — systemd Quadlet 自動啟動（開機自起）：**
-
-把 `podman-quadlet/` 下的四個 unit 檔複製到 `~/.config/containers/systemd/`，
-執行 `systemctl --user daemon-reload`。完整指令與 env-file 範例見
-[`podman-quadlet/README.md`](podman-quadlet/README.md)。
-
-Rootless podman 常見坑（來自這台主機過往部署經驗）：
-
-1. **必加 registry qualifier** — `unqualified-search-registries` 未必包含
-   Docker Hub。所有 image 都已加 `docker.io/...` 前綴。
-2. **本專案埠都 >1024**，不需 `cap_net_bind_service`；若你要用 <1024 埠，
-   需 `sysctl net.ipv4.ip_unprivileged_port_start=X`。
-3. **多使用者同機注意埠占用** — Rootless podman 不會跨 user 檢查 port
-   衝突，`up` 前先 `ss -tlnp` 掃過。
-
-### 生產環境建議
-
-1. 修改 `EMQX_DASHBOARD_PASSWORD` 為強密碼。
-2. 設定 `EMQX_ALLOW_ANONYMOUS=false`，並在 Dashboard 啟用驗證。
-3. 為 8883 埠設定 TLS 憑證。
-4. 預設埠綁到 `0.0.0.0`（LAN 可連）。要鎖 localhost 請在 `.env` 埠前
-   加上 `127.0.0.1:`（例如 `MQTT_TCP_PORT=127.0.0.1:1883`）。
-5. 定期備份 `woow_emqx_data` volume。
-
-其餘章節（Portainer / MQTT 測試 / 備份還原 / Troubleshooting）與英文版相同。
-
----
-
-## Migration note | 遷移說明
-
-This repository was split out of the retired monorepo
-`WOOWTECH/Woow_eqmx_docker_compose_all` (note the typo `eqmx` in the old name)
-during the WOOWTECH repo restructure. The old repository has been archived and
-is no longer updated — use this repository for Podman / Docker Compose
-deployments, and the sibling repositories linked at the top for K3s and
-Home Assistant.
-
-本倉庫由已封存的舊倉庫 `WOOWTECH/Woow_eqmx_docker_compose_all`（舊名有拼字
-`eqmx`）拆分而來。舊倉庫已封存不再更新，請改用本倉庫進行 Podman / Docker
-Compose 部署，K3s 與 Home Assistant 請使用文件上方列出的姊妹倉庫。
+| Symptom | Check |
+|---|---|
+| `install.sh` says a container exists and is not managed | Stop whatever runs it (compose, a hand-written unit), then use the printed `podman rename`, or remove it (see migration). |
+| `emqx.service` fails right after install | `journalctl --user -u emqx.service -n 100` and `podman logs woow-emqx`. A port in use shows up here: check `ss -tlnp`. |
+| Dashboard login fails on an adopted volume | The admin password lives in the data volume. The secret only matters on an empty volume. |
+| MQTT clients get "not authorised" | Anonymous access is off. Use a user from the built-in database (Dashboard > Authentication). |
+| Units are gone after logout or reboot | `loginctl show-user $USER -p Linger` must say `yes`. |
+| `systemctl --user` fails over `su` or `sudo` | Log in as the user over ssh or the console, or `export XDG_RUNTIME_DIR=/run/user/$(id -u)`. |
