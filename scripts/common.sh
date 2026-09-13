@@ -14,6 +14,12 @@ BACKUP_ROOT=$HOME/.local/share/woow-backups/$APP
 CONTAINERS=("woow-emqx:emqx.service" "woow-emqx-ngrok:emqx-ngrok.service")
 # env keys allowed to carry user-supplied credentials (ERE on the whole key; empty = none)
 ENV_CREDENTIAL_ALLOW=''
+# scripts/migrate-legacy.sh, capture path (STANDARD 7a): containers whose own deploy or upgrade
+# script writes into the running container, so a capture must commit the writable layer first.
+# EMQX writes only into its two volumes; the live openclaw container measures 11 336 bytes.
+LEGACY_COMMIT_ALWAYS=''
+# ...and the measured writable-layer size above which any container is committed anyway.
+LEGACY_COMMIT_RW_BYTES=1048576
 # ------------------------------------------------------------------------------------------------
 export QL_APP=$APP
 
