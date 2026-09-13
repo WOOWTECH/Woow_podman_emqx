@@ -27,7 +27,7 @@ while (($#)); do
   shift
 done
 ql_require_rootless
-app_lock
+ql_lock "$APP"
 [[ $(podman inspect --format '{{.State.Running}}' woow-emqx 2>/dev/null) == true ]] \
   || ql_die "woow-emqx is not running (systemctl --user start emqx.service)"
 
@@ -48,9 +48,10 @@ if ((cold)); then
   if systemctl --user is-active --quiet emqx-ngrok.service; then units+=(emqx-ngrok.service); fi
   systemctl --user stop emqx.service
   start_again() { systemctl --user start "${units[@]}" || ql_warn "could not start ${units[*]} again"; }
-  trap start_again EXIT
+  # a hook, not `trap ... EXIT`, which would replace the handler ql_lock armed
+  ql_cleanup restart start_again
   ql_backup_volume woow_emqx_data "$dest" >/dev/null
-  trap - EXIT
+  ql_cleanup_clear restart
   start_again
   app_wait_healthy woow-emqx 180 emqx.service
 fi
