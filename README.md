@@ -217,29 +217,85 @@ the env file first. Images and backups are never deleted.
 
 ## Migrating an existing compose deployment
 
-The Quadlet units use the compose names (container `woow-emqx`, volumes `woow_emqx_data` and
-`woow_emqx_log`, network `woow_emqx_network`, node name `emqx@127.0.0.1`), so the migration adopts the
-data in place.
+`scripts/migrate-legacy.sh` does this end to end, with a rollback. The Quadlet units already carry
+the compose-era names (container `woow-emqx`, volumes `woow_emqx_data` and `woow_emqx_log`, network
+`woow_emqx_network`, node name `emqx@127.0.0.1`), so **both volumes are adopted exactly where they
+are — nothing is copied** and the cutover is about a minute.
 
-1. **Back up.** Run `podman exec woow-emqx emqx ctl data export` and copy the file out. Also run
-   `podman volume export woow_emqx_data -o woow_emqx_data.tar` and save
-   `podman inspect woow-emqx > legacy-inspect.json`.
-2. **Seed the secrets from the old `.env`** so the recorded copies match reality. Pipe them in; never
-   echo them.
-   - `grep '^EMQX_DASHBOARD_PASSWORD=' .env | cut -d= -f2- | tr -d '\n' | podman secret create woow-emqx-dashboard-password -`
-   - Do the same for the MQTT user's password into `woow-emqx-mqtt-password`, and set
-     `WOOW_EMQX_MQTT_USER`.
-3. **Remove the compose container:** `podman stop woow-emqx && podman rm woow-emqx`.
-   - If it was started with `restart: always`, do not just rename it. With `podman-restart.service`
-     enabled it would start again at every boot and fight for the ports, and podman 4.9 cannot change
-     a container's restart policy.
-   - Otherwise, `install.sh` refuses to replace a container it does not manage and prints a
-     `podman rename` command. You can keep the old container that way for rollback.
-4. **Install:** `scripts/install.sh`, then `tests/smoke.sh`. A dashboard or Dashboard-created
-   authenticator in the volume's `cluster.hocon` outranks `base.hocon`, so the existing users and
-   settings stay.
-5. **Roll back if needed:** `scripts/uninstall.sh`, then start the old compose project again from
-   the `compose-final` checkout. Both paths use the same volumes.
+```bash
+scripts/migrate-legacy.sh --dry-run        # every check, plus which rollback shape this host needs
+scripts/migrate-legacy.sh --prepare-only   # hot backup and the rollback copy; no downtime
+scripts/migrate-legacy.sh --yes            # the cutover
+scripts/migrate-legacy.sh --status         # what it recorded
+```
+
+What it refuses rather than guesses: a missing or already-Quadlet-managed container, a stopped one,
+a data volume mounted somewhere other than `/opt/emqx/data`, a second running container writing to
+either volume, a **node name** other than `emqx@127.0.0.1` (mnesia lives under the node name inside
+the data volume, so the wrong one would start the broker on an empty database), an image that is not
+the digest this checkout pins, a missing network, ports published on more than one address, a port
+held by something that is not the legacy broker, and units already installed.
+
+It then takes a hot export of both volumes plus `podman inspect`, the legacy `.env` and the compose
+files (mode 0600 — the inspect carries the dashboard password), stops the broker, takes a cold
+export, retires the container, installs, and **proves the adoption**: each volume's mountpoint,
+`CreatedAt` and inode are compared with the values read before the cutover. A `.volume` that had
+lost `VolumeName=` would have produced a brand new `systemd-emqx-data` here, and that comparison is
+what catches it. The measured downtime is printed and recorded in the state file.
+
+Two things change on purpose, and the script says so:
+
+* **The dashboard password does not.** EMQX seeds `EMQX_DASHBOARD__DEFAULT_PASSWORD` only into an
+  *empty* data volume, so the generated `woow-emqx-dashboard-password` secret is inert on an adopted
+  one and the old password still works. It does that for you unless you pass `--keep-dashboard-password`; you can also run
+  `podman exec woow-emqx emqx ctl admins passwd admin <new>` later.
+* **`config/base.hocon` declares a built-in-database authenticator.** A compose broker whose
+  authentication chain was empty accepted anonymous clients (`EMQX_ALLOW_ANONYMOUS` does nothing in
+  EMQX 5); after the migration those clients are rejected. The script reports the connection count
+  before the cutover and warns when it is not zero. A Dashboard-created authenticator already in the
+  volume's `cluster.hocon` outranks `base.hocon` and is kept.
+
+### Rollback shape: why this stack is the one that has to be captured
+
+Keeping a rollback by renaming the legacy container and leaving it stopped only works while nothing
+starts it again. The user unit `podman-restart.service` runs
+`podman start --all --filter restart-policy=always` at boot, and **`woow-emqx` is the one container
+in the WOOWTECH fleet whose restart policy is exactly `always`** (the compose overlay
+`docker-compose.autostart.yml` sets it, because nothing else brought the broker back after a
+reboot). On a host where that unit is enabled, a renamed-and-stopped `woow-emqx` would revive at the
+next boot and fight the Quadlet container for its name, its five ports and both volumes — and podman
+4.9.3 cannot clear a restart policy afterwards (`podman update` is cgroup-only).
+
+So `ql_rollback_strategy` asks the host two questions — is `podman-restart.service` enabled for this
+user, and is any legacy container's policy exactly `always` — and answers:
+
+| answer | what the cutover does | what `--rollback` does |
+|---|---|---|
+| `rename` | `podman rename woow-emqx woow-emqx-legacy-<suffix>`, left stopped | renames it back and starts it |
+| `capture` | `ql_capture_container` into the backup directory, then a plain `podman rm` (never `rm -v`: that would delete the anonymous volumes the capture expects to find again) | `ql_recreate_container` rebuilds it **with restart-policy `always` re-added**, then starts it |
+
+The capture is taken in the prepare phase, before any downtime, so a container the library cannot
+replay is discovered while the broker is still serving. EMQX writes into its two volumes and not
+into its own container — the live container measures ~11 KB of writable layer — so the capture does
+not need `--commit`; the script measures it and says so.
+
+### Rollback
+
+```bash
+scripts/migrate-legacy.sh --rollback
+```
+
+It stops and removes the Quadlet units (**both volumes, the network and the secrets are kept**),
+brings the legacy container back in whichever shape the cutover used, starts it and waits for the
+dashboard. No data restore is involved: the volumes were adopted in place and never rewritten. The
+cold exports in the backup directory are only for the case where the data itself is damaged — put
+one back with `podman volume import woow_emqx_data <file>.tar` into a stopped stack.
+
+### After the soak
+
+Once the Quadlet stack has run long enough: remove `woow-emqx-legacy-<suffix>` (rename path) or the
+`legacy-container/` directory in the backup and the image `localhost/woow-emqx-legacy-*` if a commit
+was taken (capture path), and archive the backup directory. Keep the compose checkout until then.
 
 ## Files
 
@@ -248,16 +304,20 @@ quadlet/                 Quadlet units with @@VAR@@ tokens; quadlet/render-vars 
 quadlet/optional/        the ngrok tunnel unit
 config/emqx.env.example  template for ~/.config/emqx/emqx.env
 config/base.hocon        authenticator defaults, installed to ~/.config/emqx/base.hocon
-scripts/                 install, upgrade, uninstall, backup, restore, ngrok-url
+scripts/                 install, upgrade, uninstall, backup, restore, ngrok-url, migrate-legacy
+scripts/legacy-common.sh the rename-vs-capture rollback helpers and the volume adoption proof
 scripts/render-args.sh   values computed from the env file (shared by install.sh and tests/dryrun.sh)
 scripts/lib/             vendored quadlet-lib (do not edit; CI checks its hash)
 tests/dryrun.sh          render + Quadlet 4.9.3 dry-run + systemd-analyze verify (CI and local)
 tests/smoke.sh           post-install checks on a host
 tests/lint-repo.sh       credential scan, compose removal, README and EMQX invariants (CI)
+tests/rollback-model.sh  the rollback model and the adoption proof, against tests/shims (CI)
+tests/shims/             podman and systemctl doubles; no container is ever created
+docs/migration-rehearsal-toypark1234.md   output of the end-to-end rehearsal of the migration
 ```
 
 Development checks, all static, no containers: `bash tests/dryrun.sh`,
-`shellcheck -x scripts/*.sh tests/*.sh`, `tests/lint-repo.sh`.
+`shellcheck -x scripts/*.sh tests/*.sh`, `tests/lint-repo.sh`, `tests/rollback-model.sh`.
 
 ## Troubleshooting
 

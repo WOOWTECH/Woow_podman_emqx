@@ -203,24 +203,72 @@ scripts/uninstall.sh --purge         # 另外刪除 volume、網路、secrets �
 
 ## 從既有 compose 部署遷移
 
-Quadlet 單元沿用 compose 的名稱（容器 `woow-emqx`、volume `woow_emqx_data` 與 `woow_emqx_log`、網路
-`woow_emqx_network`、節點名稱 `emqx@127.0.0.1`），所以遷移時資料原地沿用。
+`scripts/migrate-legacy.sh` 會完整執行整個流程，並提供回復。Quadlet 單元已沿用 compose 時期的名稱（容器
+`woow-emqx`、volume `woow_emqx_data` 與 `woow_emqx_log`、網路 `woow_emqx_network`、節點名稱
+`emqx@127.0.0.1`），因此**兩個 volume 都是原地沿用 — 不複製任何資料**，切換時間約一分鐘。
 
-1. **備份。** 執行 `podman exec woow-emqx emqx ctl data export` 並把檔案複製出來；另外執行
-   `podman volume export woow_emqx_data -o woow_emqx_data.tar`，並保存
-   `podman inspect woow-emqx > legacy-inspect.json`。
-2. **從舊的 `.env` 匯入 secrets**，讓記錄的副本與實際一致。一律用管線傳遞，不要 echo。
-   - `grep '^EMQX_DASHBOARD_PASSWORD=' .env | cut -d= -f2- | tr -d '\n' | podman secret create woow-emqx-dashboard-password -`
-   - MQTT 使用者的密碼用同樣方式存成 `woow-emqx-mqtt-password`，並設定 `WOOW_EMQX_MQTT_USER`。
-3. **移除 compose 容器：** `podman stop woow-emqx && podman rm woow-emqx`。
-   - 若它是以 `restart: always` 啟動的，不要只改名。啟用 `podman-restart.service` 時它會在每次開機再被
-     啟動並搶占埠，而 podman 4.9 無法修改容器的重啟策略。
-   - 其他情況下，`install.sh` 會拒絕取代它不管理的容器，並印出 `podman rename` 指令；可用此方式保留舊容器
-     以便回復。
-4. **安裝：** `scripts/install.sh`，接著 `tests/smoke.sh`。volume 裡 `cluster.hocon` 中由 Dashboard 建立的
-   認證器優先於 `base.hocon`，因此既有使用者與設定都會保留。
-5. **需要時回復：** `scripts/uninstall.sh`，然後從 `compose-final` 的 checkout 重新啟動舊 compose 專案；
-   兩條路徑使用同樣的 volume。
+```bash
+scripts/migrate-legacy.sh --dry-run        # 全部檢查，並說明本主機需要哪一種回復形式
+scripts/migrate-legacy.sh --prepare-only   # 熱備份與回復副本；無停機
+scripts/migrate-legacy.sh --yes            # 正式切換
+scripts/migrate-legacy.sh --status         # 查看記錄
+```
+
+它會拒絕而不是猜測的情況：容器不存在或已由 Quadlet 管理、容器未執行、資料 volume 掛在
+`/opt/emqx/data` 以外的位置、另有執行中的容器在寫同一個 volume、**節點名稱**不是 `emqx@127.0.0.1`
+（mnesia 存放在資料 volume 裡以節點名稱命名的目錄下，名稱不符會讓 broker 從空資料庫啟動）、映像不是本
+checkout 釘選的 digest、網路不存在、埠發佈在多個位址、目標埠被非舊 broker 的程式占用，以及單元已安裝。
+
+接著它會對兩個 volume 做熱匯出，並保存 `podman inspect`、舊的 `.env` 與 compose 檔（權限 0600 —
+inspect 內含 dashboard 密碼），停止 broker、做冷匯出、退役舊容器、安裝，然後**驗證沿用**：比對每個
+volume 的 mountpoint、`CreatedAt` 與 inode 是否與切換前讀到的一致。若 `.volume` 少了 `VolumeName=`，
+這裡會出現全新的 `systemd-emqx-data`，而這個比對正是用來抓出它。實測停機時間會列出並寫入狀態檔。
+
+有兩件事會刻意改變，腳本會明確說明：
+
+* **dashboard 密碼不會變。** EMQX 只在資料 volume 為**空**時才寫入 `EMQX_DASHBOARD__DEFAULT_PASSWORD`，
+  所以在沿用的 volume 上，產生的 `woow-emqx-dashboard-password` secret 不生效，舊密碼仍然有效。加上
+  `--reset-dashboard-password` 可讓兩者一致，或之後執行
+  `podman exec woow-emqx emqx ctl admins passwd admin <new>`。
+* **`config/base.hocon` 宣告了 built-in-database 認證器。** 認證鏈為空的 compose broker 會接受匿名連線
+  （`EMQX_ALLOW_ANONYMOUS` 在 EMQX 5 中無作用）；遷移後這些連線會被拒絕。腳本會回報切換前的連線數，
+  不為零時發出警告。volume 的 `cluster.hocon` 中由 Dashboard 建立的認證器優先於 `base.hocon`，會被保留。
+
+### 回復形式：為什麼這個 stack 必須用 capture
+
+把舊容器改名並保持停止，只在沒有東西再啟動它時才安全。使用者單元 `podman-restart.service` 會在開機時執行
+`podman start --all --filter restart-policy=always`，而 **`woow-emqx` 是整個 WOOWTECH 機隊中唯一重啟策略
+正好是 `always` 的容器**（compose overlay `docker-compose.autostart.yml` 設定的，因為沒有別的機制能在重開機
+後把 broker 帶回來）。在啟用該單元的主機上，改名後停止的 `woow-emqx` 會在下次開機復活，與 Quadlet 容器爭奪
+名稱、五個埠與兩個 volume — 而 podman 4.9.3 事後無法清除重啟策略（`podman update` 只能改 cgroup 參數）。
+
+因此 `ql_rollback_strategy` 會問主機兩個問題 — 這個使用者的 `podman-restart.service` 是否啟用、是否有舊容器
+的策略正好是 `always` — 然後回答：
+
+| 回答 | 切換時的動作 | `--rollback` 的動作 |
+|---|---|---|
+| `rename` | `podman rename woow-emqx woow-emqx-legacy-<suffix>`，保持停止 | 改名回去並啟動 |
+| `capture` | `ql_capture_container` 寫入備份目錄，然後執行單純的 `podman rm`（絕不用 `rm -v`，那會刪掉 capture 預期要找回的匿名 volume） | `ql_recreate_container` 重建它並**重新加回 `always` 重啟策略**，然後啟動 |
+
+capture 在準備階段（尚未停機時）進行，因此若某個容器無法被函式庫重放，會在 broker 仍在服務時就被發現。
+EMQX 只寫入它的兩個 volume，不寫自己的容器 — 線上容器的可寫層約 11 KB — 所以 capture 不需要 `--commit`；
+腳本會實際量測並說明。
+
+### 回復
+
+```bash
+scripts/migrate-legacy.sh --rollback
+```
+
+它會停止並移除 Quadlet 單元（**兩個 volume、網路與 secrets 都保留**），依切換當時採用的形式把舊容器帶回來、
+啟動它並等待 dashboard。過程中不涉及資料還原：volume 是原地沿用、從未被覆寫。備份目錄中的冷匯出只在資料本身
+損壞時才需要 — 在 stack 停止的狀態下用 `podman volume import woow_emqx_data <file>.tar` 還原。
+
+### 觀察期結束後
+
+Quadlet stack 穩定運行一段時間後：移除 `woow-emqx-legacy-<suffix>`（rename 路徑），或備份中的
+`legacy-container/` 目錄與（若有 commit）`localhost/woow-emqx-legacy-*` 映像（capture 路徑），並封存備份目錄。
+在那之前請保留 compose checkout。
 
 ## 檔案
 
@@ -229,16 +277,20 @@ quadlet/                 帶 @@VAR@@ 標記的 Quadlet 單元；quadlet/render-v
 quadlet/optional/        ngrok 通道單元
 config/emqx.env.example  ~/.config/emqx/emqx.env 的範本
 config/base.hocon        認證器預設值，安裝到 ~/.config/emqx/base.hocon
-scripts/                 install、upgrade、uninstall、backup、restore、ngrok-url
+scripts/                 install、upgrade、uninstall、backup、restore、ngrok-url、migrate-legacy
+scripts/legacy-common.sh rename 與 capture 回復輔助函式，以及 volume 沿用驗證
 scripts/render-args.sh   由 env 檔計算的值（install.sh 與 tests/dryrun.sh 共用）
 scripts/lib/             內嵌的 quadlet-lib（請勿修改；CI 會檢查其雜湊）
 tests/dryrun.sh          產生單元 + Quadlet 4.9.3 dry-run + systemd-analyze verify（CI 與本機）
 tests/smoke.sh           在主機上的安裝後檢查
 tests/lint-repo.sh       憑證掃描、compose 移除、README 與 EMQX 不變條件（CI）
+tests/rollback-model.sh  以 tests/shims 驗證回復模型與沿用驗證（CI）
+tests/shims/             podman 與 systemctl 測試替身；不會建立任何容器
+docs/migration-rehearsal-toypark1234.md   遷移端對端預演的實際輸出
 ```
 
 開發檢查（全為靜態，不啟動容器）：`bash tests/dryrun.sh`、`shellcheck -x scripts/*.sh tests/*.sh`、
-`tests/lint-repo.sh`。
+`tests/lint-repo.sh`、`tests/rollback-model.sh`。
 
 ## 疑難排解
 
