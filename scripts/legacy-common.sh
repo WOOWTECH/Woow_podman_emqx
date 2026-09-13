@@ -18,24 +18,6 @@
 # LEGACY_COMMIT_RW_BYTES is the measured size above which any container is committed anyway. Both
 # are set in scripts/common.sh, so the decision is per repo, visible, and testable.
 
-# app_unlocked <cmd...>: run <cmd> with the app lock's file descriptor closed.
-#
-# ql_lock takes the per-app lock with `exec {fd}>"$dir/lock"`, and bash does not mark a descriptor
-# opened that way close-on-exec. Every child therefore inherits it - including conmon and
-# rootlessport, which outlive the script and keep the flock for as long as the container runs. The
-# next install, upgrade, uninstall or --rollback for this app then dies with "another
-# install/upgrade/uninstall is running". Verified on toypark1234, where both the emqx and the odoo18
-# locks were held by a conmon that had inherited them.
-#
-# Until quadlet-lib closes that descriptor itself, everything that can start a container runs
-# through here. A missing QL_LOCK_FD (no lock taken) just runs the command.
-app_unlocked() {
-  if [[ -n ${QL_LOCK_FD:-} ]]; then
-    eval '"$@" '"$QL_LOCK_FD"'>&-'
-  else
-    "$@"
-  fi
-}
 
 # app_check_not_foreign <container> <expected compose project>: refuse a same-named container that
 # belongs to something else. The legacy containers this migration retires are identified by name, so

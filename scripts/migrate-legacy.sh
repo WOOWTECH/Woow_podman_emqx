@@ -147,7 +147,7 @@ rollback() {
   done
   # renamed back, or recreated from the capture the cutover took - whichever the host needed
   app_legacy_restore "$sfx" "$bk" "${LEGACY_CONTAINERS[@]}"
-  app_unlocked podman start "${LEGACY_CONTAINERS[@]}" >/dev/null || ql_die "could not start the legacy container again"
+  podman start "${LEGACY_CONTAINERS[@]}" >/dev/null || ql_die "could not start the legacy container again"
   port=$(state_get LEGACY_PORT_DASHBOARD)
   ql_wait_http "http://127.0.0.1:${port:-18083}/" '200' 180 \
     || ql_die "the legacy EMQX dashboard did not answer on 127.0.0.1:${port:-18083} after the rollback"
@@ -384,7 +384,7 @@ ql_wait_until 60 "the published ports to be released" bash -c \
 # =============================================================================================
 ql_info "step 4/5: scripts/install.sh"
 failed=0
-app_unlocked "$REPO/scripts/install.sh" --accept-defaults --no-smoke "${sets[@]/#/--set=}" || failed=1
+"$REPO/scripts/install.sh" --accept-defaults --no-smoke "${sets[@]/#/--set=}" || failed=1
 DOWN_TO=$(now_s)
 if ((!failed)); then
   ql_info "step 5/5: adoption proof, tests/smoke.sh and the comparison"
@@ -420,7 +420,7 @@ if ((!failed)); then
       failed=1
     fi
   fi
-  ((failed)) || app_unlocked "${smoke[@]}" || failed=1
+  ((failed)) || "${smoke[@]}" || failed=1
 fi
 if ((failed)); then
   if ((auto_rollback)); then
