@@ -37,6 +37,22 @@ app_unlocked() {
   fi
 }
 
+# app_check_not_foreign <container> <expected compose project>: refuse a same-named container that
+# belongs to something else. The legacy containers this migration retires are identified by name, so
+# a container of that name created by a different project - or by a different app entirely - must
+# stop the run rather than be captured, renamed and replaced. A container with no compose label at
+# all is only warned about: a hand-made `podman run` equivalent is a legitimate shape.
+app_check_not_foreign() {
+  local c=$1 want=$2 got
+  got=$(podman inspect --format '{{index .Config.Labels "io.podman.compose.project"}}' "$c" 2>/dev/null)
+  [[ $got == "<no value>" ]] && got=''
+  if [[ -z $got ]]; then
+    ql_warn "$c carries no compose project label; treating it as the legacy container of this stack. Check it is really yours before continuing"
+    return 0
+  fi
+  [[ $got == "$want" ]] || ql_die "$c belongs to the compose project '$got', not '$want'. This migration retires containers by name and will not touch one that is not this stack's"
+}
+
 # app_volume_identity <volume>: "<mountpoint>|<createdat>|<inode>". The three facts that prove the
 # Quadlet unit adopted this very volume instead of silently creating a fresh one (which is what a
 # .volume without VolumeName= would have done - it would be called systemd-<name>).

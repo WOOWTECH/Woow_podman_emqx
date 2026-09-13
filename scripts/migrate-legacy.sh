@@ -64,6 +64,9 @@ STATE=$APP_STATE_DIR/migration.state
 DATA_VOLUME=woow_emqx_data
 LOG_VOLUME=woow_emqx_log
 LEGACY_NETWORK=woow_emqx_network
+# The podman-compose project label the legacy container must carry (the directory it was deployed
+# from). A same-named container from any other project is refused, not retired.
+LEGACY_PROJECT=woow_podman_emqx
 NODE_NAME=emqx@127.0.0.1
 UNIT=emqx.service
 
@@ -178,6 +181,7 @@ fi
 podman container exists "$container" || ql_die "legacy container $container not found; nothing to migrate"
 label=$(podman inspect --format '{{index .Config.Labels "PODMAN_SYSTEMD_UNIT"}}' "$container")
 [[ $label != "$UNIT" ]] || ql_die "$container is already managed by Quadlet ($label); this host needs no migration"
+app_check_not_foreign "$container" "$LEGACY_PROJECT"
 running "$container" || ql_die "legacy container $container is not running; start the legacy stack first (the backup and the snapshot are taken hot)"
 if quadlet_installed; then
   ql_die "the EMQX Quadlet units are already installed ($UNIT); this host needs no migration"
