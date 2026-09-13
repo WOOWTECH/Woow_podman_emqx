@@ -103,10 +103,14 @@ if ((mqtt)); then
   run_client() { podman run --rm --pull=missing --network woow_emqx_network "$@" "$MOSQUITTO_IMAGE" "${cmd[@]}"; }
   # A5 anonymous MQTT is refused: THE key check of this repo
   cmd=(mosquitto_pub -h woow-emqx -p 1883 -t woow/smoke/anon -m x -q 1)
+  # EMQX 5.8.9 answers an empty username with CONNACK code 4, "bad user name or password", not
+  # code 5 "not authorised" - verified against this repo's pinned broker and mosquitto 2.0.22 on
+  # toypark1234, where a wrong password gives the identical message. Accept either wording: an
+  # anonymous client that is ACCEPTED is still a FAIL above, so this only classifies the refusal.
   if out=$(run_client 2>&1); then
     fail "A5 an anonymous MQTT client was accepted"
-  elif grep -qi 'not authori' <<<"$out"; then
-    pass "A5 anonymous MQTT is refused (not authorised)"
+  elif grep -qiE 'not authori|bad user name or password' <<<"$out"; then
+    pass "A5 anonymous MQTT is refused ($(grep -oiE 'not authori[sz]ed|bad user name or password' <<<"$out" | head -n1))"
   else
     fail "A5 anonymous publish failed for another reason: $(tail -n1 <<<"$out")"
   fi
