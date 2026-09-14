@@ -5,6 +5,10 @@
 # tests/rollback-model.sh drives the legacy rollback helpers and the adoption proof of
 # scripts/migrate-legacy.sh against the doubles in tests/shims (podman, systemctl): no container is
 # created and the runner's user manager is never touched.
+#
+# tests/smoke-a4.sh drives the real tests/smoke.sh against small stand-ins for podman, systemctl
+# and curl, pinning the --keep-dashboard-password / --skip-dashboard-login behaviour (A4 must be
+# skippable without becoming a blanket pass on a genuine failure).
 name: scripts-ci
 
 on:
@@ -32,3 +36,6 @@ jobs:
 
       - name: Legacy rollback model (rename vs capture) and the adoption proof
         run: tests/rollback-model.sh
+
+      - name: smoke.sh A4 (--keep-dashboard-password / --skip-dashboard-login)
+        run: tests/smoke-a4.sh

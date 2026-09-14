@@ -3,10 +3,17 @@
 # and upgrade.sh call it too). Read-only apart from throwaway MQTT client containers
 # (eclipse-mosquitto, pinned) and a retained test message that is cleared again.
 #
-#   tests/smoke.sh [--quick] [--no-mqtt]
+#   tests/smoke.sh [--quick] [--no-mqtt] [--skip-dashboard-login]
 #
-#   --quick    units, health, published ports and dashboard login only
-#   --no-mqtt  skip the MQTT client checks (hosts that cannot pull the client image)
+#   --quick                units, health, published ports and dashboard login only
+#   --no-mqtt               skip the MQTT client checks (hosts that cannot pull the client image)
+#   --skip-dashboard-login  skip A4's login attempts. For a cutover run with
+#                           --keep-dashboard-password: the admin password was deliberately left as
+#                           whatever the legacy deployment had, which this script has no way to know
+#                           (EMQX stores it hashed in the data volume, never in plaintext), so a
+#                           login with the *generated* woow-emqx-dashboard-password secret is expected
+#                           to fail and is not a sign the cutover is broken. Dashboard reachability is
+#                           still proved earlier, by install.sh's own http wait and by A1/A2 here.
 #
 # Secrets are read with `podman secret inspect --showsecret` into variables and compared in-process;
 # nothing secret is printed, and passwords reach curl and the MQTT clients through 0600 files.
@@ -20,12 +27,13 @@ REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 export QL_LOG_PREFIX=smoke
 MOSQUITTO_IMAGE=docker.io/library/eclipse-mosquitto:2.0.22@sha256:212f89e1eaeb2c322d6441b64396e3346026674db8fa9c27beac293405c32b3c
 
-quick=0 mqtt=1
+quick=0 mqtt=1 skip_dash_login=0
 while (($#)); do
   case $1 in
     --quick) quick=1 ;;
     --no-mqtt) mqtt=0 ;;
-    -h | --help) sed -n '2,12p' "$0"; exit 0 ;;
+    --skip-dashboard-login) skip_dash_login=1 ;;
+    -h | --help) sed -n '2,16p' "$0"; exit 0 ;;
     *) ql_die "unknown option $1 (see --help)" ;;
   esac
   shift
@@ -75,21 +83,26 @@ if [[ -z $bad && $nports == 5 ]]; then pass "A3 five ports published on ${bind}"
 # A4 dashboard login with the generated password; the well-known default is rejected
 json_str() { local s=${1//\\/\\\\}; s=${s//\"/\\\"}; printf '"%s"' "$s"; }
 login() { curl -s -o /dev/null -w '%{http_code}' -m 10 -H 'Content-Type: application/json' --data @"$1" "http://$host:$dash/api/v5/login" 2>/dev/null || true; }
-dash_pw=$(app_secret_read woow-emqx-dashboard-password || true)
-if [[ -z $dash_pw ]]; then
-  fail "A4 secret woow-emqx-dashboard-password is missing"
+dash_pw=''
+if ((skip_dash_login)); then
+  warn "A4 dashboard login skipped (--skip-dashboard-login): the admin password was intentionally kept from the legacy deployment and this script cannot know it; reachability was already proved by A1/A2 and by install.sh's own wait"
 else
-  (umask 077 && printf '{"username":"admin","password":%s}' "$(json_str "$dash_pw")" >"$TMP/login.json")
-  printf '{"username":"admin","password":"public"}' >"$TMP/default.json"
-  code=$(login "$TMP/login.json")
-  if [[ $code == 200 ]]; then
-    pass "A4 dashboard login with the generated password"
+  dash_pw=$(app_secret_read woow-emqx-dashboard-password || true)
+  if [[ -z $dash_pw ]]; then
+    fail "A4 secret woow-emqx-dashboard-password is missing"
   else
-    fail "A4 dashboard login returned HTTP $code (on an adopted volume the admin password predates the secret; see README)"
+    (umask 077 && printf '{"username":"admin","password":%s}' "$(json_str "$dash_pw")" >"$TMP/login.json")
+    printf '{"username":"admin","password":"public"}' >"$TMP/default.json"
+    code=$(login "$TMP/login.json")
+    if [[ $code == 200 ]]; then
+      pass "A4 dashboard login with the generated password"
+    else
+      fail "A4 dashboard login returned HTTP $code (on an adopted volume the admin password predates the secret; see README)"
+    fi
+    code=$(login "$TMP/default.json")
+    if [[ $code == 401 ]]; then pass "A4 admin/public is rejected"; else fail "A4 admin/public returned HTTP $code, want 401"; fi
+    rm -f "$TMP/login.json"
   fi
-  code=$(login "$TMP/default.json")
-  if [[ $code == 401 ]]; then pass "A4 admin/public is rejected"; else fail "A4 admin/public returned HTTP $code, want 401"; fi
-  rm -f "$TMP/login.json"
 fi
 
 if ((quick)); then

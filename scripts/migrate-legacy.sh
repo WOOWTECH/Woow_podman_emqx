@@ -409,7 +409,7 @@ if ((!failed)); then
     if ((keep_dash)); then
       ql_warn "--keep-dashboard-password: the dashboard admin password is still the legacy one and does not match the woow-emqx-dashboard-password secret. Align them later with: podman exec $container emqx ctl admins passwd admin <new>"
       ql_warn "skipping the MQTT and dashboard-login part of tests/smoke.sh (its A4 would fail on that mismatch); run tests/smoke.sh by hand once the passwords agree"
-      smoke=("$REPO/tests/smoke.sh" --quick --no-mqtt)
+      smoke=("$REPO/tests/smoke.sh" --quick --no-mqtt --skip-dashboard-login)
       dash_aligned=0
     elif set_dashboard_password; then
       ql_info "the dashboard admin password now matches the woow-emqx-dashboard-password secret"
