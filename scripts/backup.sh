@@ -32,6 +32,7 @@ ql_lock "$APP"
   || ql_die "woow-emqx is not running (systemctl --user start emqx.service)"
 
 dest=$(app_new_backup_dir backup)
+app_backup_secrets "$dest"
 # 1. logical export from the running broker
 out=$(podman exec woow-emqx emqx ctl data export 2>&1) || ql_die "emqx ctl data export failed: $out"
 name=$(grep -oE 'emqx-export-[A-Za-z0-9_.:-]+\.tar\.gz' <<<"$out" | tail -n1 || true)
@@ -45,6 +46,7 @@ ql_info "exported the broker data -> $dest/$name"
 # 2. optional cold copy of the whole data volume
 if ((cold)); then
   units=(emqx.service)
+  if systemctl --user is-active --quiet emqx-entrance.service; then units+=(emqx-entrance.service); fi
   if systemctl --user is-active --quiet emqx-ngrok.service; then units+=(emqx-ngrok.service); fi
   systemctl --user stop emqx.service
   start_again() { systemctl --user start "${units[@]}" || ql_warn "could not start ${units[*]} again"; }

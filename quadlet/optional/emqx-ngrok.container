@@ -1,7 +1,7 @@
 # Optional ngrok TCP tunnel for raw MQTT (1883). Installed only while WOOW_EMQX_NGROK=1
 # (scripts/install.sh --with-ngrok). It publishes the broker to the internet, which is acceptable only
 # because anonymous access is off; install.sh stops this unit if the anonymous-MQTT smoke check fails.
-# Public URL: scripts/ngrok-url.sh (reads "url=tcp://" from this unit's journal).
+# Public URL: scripts/ngrok-url.sh reads the latest WOOW_MQTT_PUBLIC_URL line.
 [Unit]
 Description=Woow EMQX ngrok TCP tunnel (optional)
 Documentation=https://github.com/WOOWTECH/Woow_podman_emqx
@@ -13,14 +13,17 @@ StartLimitBurst=5
 
 [Container]
 ContainerName=woow-emqx-ngrok
-Image=docker.io/ngrok/ngrok:3.39.11-debian@sha256:cafcc30231c5704e87e3dd7274844cf4760381642d7737c1e58730863e7e1d85
-Network=emqx.network
-HostName=emqx-ngrok
+Image=docker.io/ngrok/ngrok:3.39.11-alpine@sha256:187e588f6c4efe3b29cd3eea9fcd768a1afa7342319e3cee9aeb5af6a9cf64fd
+Network=container:woow-emqx
 Label=io.woowtech.stack=emqx
 Secret=woow-emqx-ngrok-authtoken,type=env,target=NGROK_AUTHTOKEN
-# Address the broker by container name: aardvark-dns resolves container names, not HostName=.
-# The token below adds --remote-addr=<addr> when WOOW_EMQX_NGROK_REMOTE_ADDR is set.
-Exec=tcp woow-emqx:1883 --log stdout@@EMQX_NGROK_ARGS@@
+Environment=NGROK_REMOTE_ADDR=@@EMQX_NGROK_REMOTE_ADDR@@
+Environment=WOOW_NGROK_UPSTREAM=127.0.0.1:1884
+Environment=WOOW_NGROK_PROXY_PROTOCOL=true
+PodmanArgs=--entrypoint=/bin/sh
+Exec=/opt/woow/ngrok.sh
+Volume=%h/.config/emqx/ngrok.sh:/opt/woow/ngrok.sh:ro,Z
+Volume=%h/.config/emqx/ngrok-redact.awk:/opt/woow/ngrok-redact.awk:ro,Z
 NoNewPrivileges=true
 
 [Service]

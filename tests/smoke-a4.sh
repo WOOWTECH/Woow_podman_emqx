@@ -96,16 +96,23 @@ SYSTEMCTL
   cat >"$bin/curl" <<'CURL'
 #!/usr/bin/env bash
 set -u
-file=''
+file='' url=''
 for a in "$@"; do
   case $a in
     @*) file=${a#@} ;;
+    http://*) url=$a ;;
   esac
 done
 case $file in
   *login.json) printf '%s' "${SMOKE_LOGIN_CODE:-200}" ;;
   *default.json) printf '%s' "${SMOKE_DEFAULT_CODE:-401}" ;;
-  *) printf '000' ;;
+  *)
+    case $url in
+      */mqtt) printf '101' ;;
+      */status | */status/ | */api/v5/status | */api/v5/status/ | */api/v5/prometheus/stats | */api-docs) printf '404' ;;
+      */) printf '200' ;;
+      *) printf '000' ;;
+    esac ;;
 esac
 CURL
   cat >"$bin/journalctl" <<'JOURNALCTL'

@@ -24,8 +24,8 @@ render_args() {
   addr=$(ql_env_get WOOW_EMQX_NGROK_REMOTE_ADDR '')
   if [[ -n $addr ]]; then
     ql_assert_match WOOW_EMQX_NGROK_REMOTE_ADDR "$addr" '[A-Za-z0-9.-]+:[0-9]{1,5}'
-    RENDER_ARGS+=("EMQX_NGROK_ARGS= --remote-addr=$addr")
+    RENDER_ARGS+=("EMQX_NGROK_REMOTE_ADDR=$addr")
   else
-    RENDER_ARGS+=("EMQX_NGROK_ARGS=")
+    RENDER_ARGS+=("EMQX_NGROK_REMOTE_ADDR=")
   fi
 }

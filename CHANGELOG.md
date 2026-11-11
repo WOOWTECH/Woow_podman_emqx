@@ -1,5 +1,24 @@
 # Changelog
 
+## 7.0.0 — 2026-11-11 (BREAKING: MQTT topic authorization)
+
+- Aligned the broker image with the HA add-on 5.9.1 and PaaS chart 0.1.11: EMQX 5.8.9.
+- Added the PaaS per-user topic ACL (`<username>/#`, default deny), disk-backed retained messages,
+  Prometheus basic authentication, and a generated Erlang node cookie.
+- Added a pinned nginx entrance on port 18083. It serves the dashboard and `/mqtt` WebSocket,
+  hides status, API docs and scrape routes, and rate-limits dashboard logins.
+- Updated optional ngrok to the PaaS 3.39.11 Alpine agent. It forwards to a private PROXY protocol
+  v2 listener and redacts credentials from error logs. No token is needed when ngrok is disabled.
+- Cold backups now include private copies of Podman secrets with checksums; cold restores recover
+  matching secrets and take a pre-restore backup. Reconciles Podman network and volume units after
+  a Podman storage reset.
+- Extended the installed-host smoke test to cover the entrance, WebSocket upgrade and denied
+  cross-user MQTT subscription. See `docs/ha-paas-parity-2026-11-11.md` for the source comparison.
+
+Existing ordinary MQTT users who published outside their own `<username>/#` must be granted a
+dashboard ACL or superuser role before their old topic patterns will work. The default seeded
+`woow` user uses `woow/#`.
+
 ## 6.0.0 — 2026-09-12 (BREAKING)
 
 Quadlet + systemd is now the only deployment in this repo.

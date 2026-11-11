@@ -70,7 +70,7 @@ WORK=$(mktemp -d "${TMPDIR:-/tmp}/$APP-install.XXXXXX")
 ql_cleanup work rm -rf "$WORK"
 mkdir -p "$WORK/src" "$WORK/out/config"
 cp -p "$REPO"/quadlet/*.container "$REPO"/quadlet/*.volume "$REPO"/quadlet/*.network "$WORK/src/"
-units=(emqx.service)
+units=(emqx.service emqx-entrance.service)
 if [[ $with_ngrok == 1 ]]; then
   cp -p "$REPO/quadlet/optional/emqx-ngrok.container" "$WORK/src/"
   units+=(emqx-ngrok.service)
@@ -81,6 +81,11 @@ RENDER_ARGS=()
 render_args "$RENDER_ENV"
 ql_render "$WORK/src" "$RENDER_ENV" "$REPO/quadlet/render-vars" "$WORK/out" "${RENDER_ARGS[@]}"
 cp -p "$REPO/config/base.hocon" "$WORK/out/config/base.hocon"
+cp -p "$REPO/config/acl.conf" "$WORK/out/config/acl.conf"
+cp -p "$REPO/config/entrance.conf" "$WORK/out/config/entrance.conf"
+if [[ $with_ngrok == 1 ]]; then
+  cp -p "$REPO/config/ngrok.sh" "$REPO/config/ngrok-redact.awk" "$WORK/out/config/"
+fi
 ql_dryrun "$WORK/out" --verify --ref-dir "$HOME/.config/containers/systemd" \
   || ql_die "the rendered units failed the Quadlet dry-run; nothing was installed"
 for f in "$WORK/out"/*; do
@@ -92,6 +97,7 @@ done
 ql_pull_images "$WORK/out"
 restart_main=0
 ql_secret_ensure woow-emqx-dashboard-password random:32
+ql_secret_ensure woow-emqx-node-cookie random:32
 ql_secret_ensure woow-emqx-mqtt-password random:32
 if [[ $dry == 1 ]] && ! podman secret exists woow-emqx-mqtt-password; then
   ql_info "[dry-run] would create secret woow-emqx-mqtt-bootstrap (MQTT user $mqtt_user)"
@@ -134,6 +140,9 @@ unset NGROK_AUTHTOKEN
 changed=$(ql_install_files "$WORK/out" "$APP" --prune)
 [[ -z $changed ]] || ql_info "changed: $(tr '\n' ' ' <<<"$changed")"
 grep -qx 'config/base.hocon' <<<"$changed" && restart_main=1
+grep -qx 'config/acl.conf' <<<"$changed" && restart_main=1
+if grep -qx 'config/entrance.conf' <<<"$changed"; then ql_mark_changed "$APP" emqx-entrance.service; fi
+if grep -qE '^config/ngrok(-redact\.awk|\.sh)$' <<<"$changed"; then ql_mark_changed "$APP" emqx-ngrok.service; fi
 app_env_changed && restart_main=1
 if [[ $dry == 1 ]]; then
   ((restart_main)) && ql_info "[dry-run] would restart emqx.service (settings or secrets changed)"
@@ -146,10 +155,14 @@ if ((no_start)); then
   ql_info "installed; not started (--no-start). Start with: systemctl --user start ${units[*]}"
   exit 0
 fi
+systemctl --user daemon-reload
+app_reconcile_resources
+systemctl --user reset-failed emqx.service emqx-entrance.service || true
 ql_apply_units "$APP" "${units[@]}"
 
 # ---- 7. health and smoke ----------------------------------------------------------------------
 app_wait_healthy woow-emqx 180 emqx.service
+app_wait_healthy woow-emqx-entrance 90 emqx-entrance.service
 host=$(app_local_host "$(ql_env_get WOOW_EMQX_BIND)")
 dash_port=$(ql_env_get WOOW_EMQX_PORT_DASHBOARD)
 ql_wait_http "http://$host:$dash_port/" '200' 120 || ql_die "the dashboard does not answer on $host:$dash_port"

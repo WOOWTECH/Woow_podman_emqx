@@ -36,7 +36,10 @@ if ((no_backup == 0)); then
   ql_info "pre-upgrade data backup: $data"
 fi
 app_snapshot "$snap/units"
-podman inspect --format '{{.Name}} {{.ImageName}} {{.Image}}' woow-emqx woow-emqx-ngrok >"$snap/images.txt" 2>/dev/null || true
+: >"$snap/images.txt"
+for container in woow-emqx woow-emqx-entrance woow-emqx-ngrok; do
+  podman inspect --format '{{.Name}} {{.ImageName}} {{.Image}}' "$container" >>"$snap/images.txt" 2>/dev/null || true
+done
 
 if "$REPO/scripts/install.sh" --no-smoke && "$REPO/tests/smoke.sh"; then
   ql_info "upgrade complete (unit snapshot: $snap)"
@@ -45,7 +48,7 @@ fi
 
 ql_warn "upgrade failed; rolling back to the units saved in $snap/units"
 app_snapshot_restore "$snap/units" || ql_die "rollback failed: no usable snapshot. Inspect $snap and journalctl --user -u emqx.service"
-units=(emqx.service)
+units=(emqx.service emqx-entrance.service)
 [[ -f $HOME/.config/containers/systemd/emqx-ngrok.container ]] && units+=(emqx-ngrok.service)
 systemctl --user restart "${units[@]}" || true
 if ql_wait_container_healthy woow-emqx 180 && "$REPO/tests/smoke.sh" --quick; then

@@ -38,8 +38,9 @@ fi
 app_confirm "$APP" "$yes" "--purge deletes the EMQX volumes, network, secrets and settings"
 if [[ ${QL_DRY_RUN:-0} != 1 ]]; then
   final=$(app_new_backup_dir final)
-  systemctl --user stop emqx-ngrok.service emqx.service >/dev/null 2>&1 || true
+  systemctl --user stop emqx-ngrok.service emqx-entrance.service emqx.service >/dev/null 2>&1 || true
   if podman volume exists woow_emqx_data; then ql_backup_volume woow_emqx_data "$final" >/dev/null; fi
+  app_backup_secrets "$final"
   if [[ -f $ENV_FILE ]]; then install -m 600 -- "$ENV_FILE" "$final/${ENV_FILE##*/}"; fi
   ql_info "final backup: $final"
 fi

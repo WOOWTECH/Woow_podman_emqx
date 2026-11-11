@@ -22,3 +22,21 @@ authentication = [
     bootstrap_type = plain
   }
 ]
+
+## PaaS chart 0.1.11 defaults: no unmatched topic may be used. An ordinary
+## MQTT user owns only <username>/#; dashboard changes in cluster.hocon win.
+authorization {
+  no_match = deny
+  deny_action = ignore
+  sources = [
+    {
+      type = file
+      enable = true
+      path = "${EMQX_ETC_DIR}/acl.conf"
+    }
+  ]
+}
+
+## Retained messages survive a broker restart; scrape endpoints require an API key.
+retainer.backend.storage_type = disc
+prometheus.enable_basic_auth = true
