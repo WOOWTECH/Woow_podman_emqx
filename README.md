@@ -23,17 +23,21 @@ Other platforms:
 | Item | Name | Notes |
 |---|---|---|
 | Broker container | `woow-emqx` (unit `emqx.service`) | `docker.io/emqx/emqx:5.8.9`, pinned by digest |
+| Dashboard entrance | `woow-emqx-entrance` (unit `emqx-entrance.service`) | Pinned nginx; dashboard and `/mqtt` WebSocket on port 18083 |
 | Network | `woow_emqx_network` (unit `emqx-network.service`) | private bridge |
 | Volumes | `woow_emqx_data`, `woow_emqx_log` | the same names the compose stack used, so existing data is adopted |
 | Optional tunnel | `woow-emqx-ngrok` (unit `emqx-ngrok.service`) | only with `--with-ngrok` |
 | Settings | `~/.config/emqx/emqx.env` (0600), `~/.config/emqx/base.hocon` | created by `scripts/install.sh` |
-| Credentials | podman secrets `woow-emqx-*` | generated at install time; never stored in files |
+| Credentials | podman secrets `woow-emqx-*` | generated at install time; private copies in backups |
 
 Security defaults:
 
 - **Anonymous MQTT is off.** `config/base.hocon` declares a built-in-database authenticator, and the
   first MQTT user is seeded from a podman secret.
 - **The dashboard password is generated.** There is no `admin` / `public` login.
+- **Topic access defaults to each MQTT user's own `<username>/#`.** Unmatched topics are denied.
+- **The public entrance hides status, API docs and Prometheus scrape routes.** Dashboard login is rate limited.
+- **Retained messages are stored on disk.** They survive a broker restart.
 - **Every port binds 127.0.0.1.** Set `WOOW_EMQX_BIND` for a LAN broker.
 
 > **Why anonymous access is off.** EMQX 5 has no allow-anonymous switch for MQTT. A client is treated
@@ -117,6 +121,7 @@ The env file must not hold credentials. `install.sh` refuses keys ending in `PAS
 | Podman secret | Used for | How it reaches EMQX |
 |---|---|---|
 | `woow-emqx-dashboard-password` | Dashboard user `admin` | env `EMQX_DASHBOARD__DEFAULT_PASSWORD`. EMQX reads it only on the first boot of an empty data volume. |
+| `woow-emqx-node-cookie` | Erlang node identity | env `EMQX_NODE__COOKIE`; keep it with the data volume for restore. |
 | `woow-emqx-mqtt-password` | MQTT user `WOOW_EMQX_MQTT_USER` | Not mounted. It is the source of the bootstrap file below. |
 | `woow-emqx-mqtt-bootstrap` | Seeds the MQTT user | A 0400 file for the `emqx` user. EMQX imports it when the authenticator starts and never overwrites an existing user. |
 | `woow-emqx-ngrok-authtoken` | ngrok | env `NGROK_AUTHTOKEN` for the tunnel container, created with `--with-ngrok` only |
@@ -150,9 +155,13 @@ is updated too. The import never overwrites an existing user, so the Dashboard c
   mkdir -p -m 700 ~/.config/woow-mqtt
   (umask 077; printf -- '-u woow\n-P %s\n' \
     "$(podman secret inspect --showsecret --format '{{.SecretData}}' woow-emqx-mqtt-password)" >~/.config/woow-mqtt/mosquitto_pub)
-  XDG_CONFIG_HOME=~/.config/woow-mqtt mosquitto_pub -h 127.0.0.1 -p 1883 -t test/topic -m hello
+  XDG_CONFIG_HOME=~/.config/woow-mqtt mosquitto_pub -h 127.0.0.1 -p 1883 -t woow/test/topic -m hello
   ```
 
+- **MQTT over WebSocket through the entrance:** `ws://127.0.0.1:18083/mqtt` with subprotocol `mqtt`.
+  The direct `:8083` WebSocket listener remains available for existing clients.
+- **Topic rules:** the seeded `woow` user may use `woow/#`. Add a dashboard superuser or an ACL rule
+  for a hub that must see multiple users' topics. Edits in the dashboard persist across restarts.
 - **Anonymous clients are refused** with `Connection Refused: not authorised`. That is expected. To
   deliberately allow anonymous access on a closed network, disable the authenticator in the Dashboard.
   The change is stored in `cluster.hocon`, which outranks `base.hocon`.
@@ -160,8 +169,9 @@ is updated too. The import never overwrites an existing user, so the Dashboard c
 
 ## ngrok TCP tunnel (optional)
 
-This tunnel publishes raw MQTT (1883) on the internet. It is safe only because authentication is
-enforced, and `install.sh` stops the tunnel whenever the smoke test fails.
+This tunnel publishes raw MQTT on the internet. It forwards through a private PROXY protocol v2
+listener, so EMQX can see the client's real address. Authentication is enforced, and `install.sh`
+stops the tunnel whenever the smoke test fails.
 
 ```bash
 NGROK_AUTHTOKEN=<your-token> scripts/install.sh --with-ngrok   # or omit the variable and type it at the hidden prompt
@@ -202,8 +212,13 @@ scripts/restore.sh --archive ~/.local/share/woow-backups/emqx/backup-<ts>/woow_e
 ```
 
 Backups go to `~/.local/share/woow-backups/emqx/`: files are 0600, directories 0700, with a
-`SHA256SUMS` file. A logical export is imported into the running broker. A volume export replaces
-the data volume after a pre-restore copy is taken.
+`SHA256SUMS` file. The `secrets/` directory contains the node cookie and credentials; protect it as
+you would the broker data. A logical export is imported into the running broker. A cold volume
+restore first saves the current data and secrets, then restores the saved data and matching secrets.
+Old archives without `secrets/` cannot recover a lost node cookie or first-boot credentials.
+
+See [HA and PaaS alignment evidence](docs/ha-paas-parity-2026-11-11.md) for source versions,
+feature mapping, live checks and differences.
 
 ## Uninstall
 

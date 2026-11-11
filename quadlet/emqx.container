@@ -24,14 +24,26 @@ Label=io.woowtech.stack=emqx
 # The node name is part of the mnesia path inside the data volume. Never change it on an existing volume.
 Environment=EMQX_NODE__NAME=emqx@127.0.0.1
 Environment=EMQX_DASHBOARD__DEFAULT_USERNAME=admin
+Environment="EMQX_DASHBOARD__LISTENERS__HTTP__BIND=\"0.0.0.0:18093\""
+Environment=EMQX_LISTENERS__WS__ENTRANCE__ENABLE=true
+Environment="EMQX_LISTENERS__WS__ENTRANCE__BIND=\"127.0.0.1:8093\""
+Environment="EMQX_LISTENERS__WS__ENTRANCE__WEBSOCKET__PROXY_ADDRESS_HEADER=\"x-forwarded-for\""
+Environment="EMQX_LISTENERS__WS__ENTRANCE__WEBSOCKET__PROXY_PORT_HEADER=\"x-forwarded-port\""
+Environment="EMQX_LISTENERS__WS__DEFAULT__WEBSOCKET__PROXY_ADDRESS_HEADER=\"\""
+Environment="EMQX_LISTENERS__WS__DEFAULT__WEBSOCKET__PROXY_PORT_HEADER=\"\""
+Environment=EMQX_LISTENERS__TCP__NGROK__ENABLE=true
+Environment="EMQX_LISTENERS__TCP__NGROK__BIND=\"127.0.0.1:1884\""
+Environment=EMQX_LISTENERS__TCP__NGROK__PROXY_PROTOCOL=true
 # Non-secret EMQX_* overrides plus the WOOW_* installer knobs (EMQX ignores those). Required file.
 EnvironmentFile=%h/.config/emqx/emqx.env
 Secret=woow-emqx-dashboard-password,type=env,target=EMQX_DASHBOARD__DEFAULT_PASSWORD
+Secret=woow-emqx-node-cookie,type=env,target=EMQX_NODE__COOKIE
 Secret=woow-emqx-mqtt-bootstrap,type=mount,target=/opt/emqx/etc/woow-mqtt-bootstrap.csv,uid=1000,gid=1000,mode=0400
 
 # Lowest-precedence config (base.hocon < data/configs/cluster.hocon < emqx.conf < env), so the
 # Dashboard can still override anything declared there.
 Volume=%h/.config/emqx/base.hocon:/opt/emqx/etc/base.hocon:ro,Z
+Volume=%h/.config/emqx/acl.conf:/opt/emqx/etc/acl.conf:ro,Z
 Volume=emqx-data.volume:/opt/emqx/data
 Volume=emqx-log.volume:/opt/emqx/log
 

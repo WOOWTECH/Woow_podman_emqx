@@ -20,17 +20,21 @@
 | 項目 | 名稱 | 說明 |
 |---|---|---|
 | Broker 容器 | `woow-emqx`（單元 `emqx.service`） | `docker.io/emqx/emqx:5.8.9`，以 digest 釘版 |
+| Dashboard 入口 | `woow-emqx-entrance`（單元 `emqx-entrance.service`） | 釘版 nginx；Dashboard 與 `/mqtt` WebSocket 共用 18083 埠 |
 | 網路 | `woow_emqx_network`（單元 `emqx-network.service`） | 私有 bridge |
 | Volume | `woow_emqx_data`、`woow_emqx_log` | 與 compose 相同名稱，既有資料可直接沿用 |
 | 選用通道 | `woow-emqx-ngrok`（單元 `emqx-ngrok.service`） | 僅在 `--with-ngrok` 時安裝 |
 | 設定 | `~/.config/emqx/emqx.env`（0600）、`~/.config/emqx/base.hocon` | 由 `scripts/install.sh` 建立 |
-| 憑證 | podman secrets `woow-emqx-*` | 安裝時產生，絕不寫入檔案 |
+| 憑證 | podman secrets `woow-emqx-*` | 安裝時產生，備份時存放私人副本 |
 
 安全預設：
 
 - **匿名 MQTT 關閉。** `config/base.hocon` 宣告了內建資料庫認證器，第一個 MQTT 使用者由 podman
   secret 匯入。
 - **Dashboard 密碼自動產生。** 不再有 `admin` / `public` 登入。
+- **每個 MQTT 使用者預設只能存取自己的 `<username>/#` 主題。** 其餘主題拒絕。
+- **對外入口隱藏狀態、API 文件與 Prometheus 擷取路徑。** Dashboard 登入有速率限制。
+- **保留訊息寫入磁碟。** Broker 重啟後仍在。
 - **所有埠預設綁定 127.0.0.1。** 要做區網 broker 請設定 `WOOW_EMQX_BIND`。
 
 > **為什麼匿名存取是關閉的。** EMQX 5 的 MQTT 沒有「允許匿名」開關：只要認證鏈是空的，客戶端就被視為
@@ -109,6 +113,7 @@ env 檔不可存放憑證。`install.sh` 會拒絕結尾為 `PASSWORD`、`SECRET
 | Podman secret | 用途 | 如何傳給 EMQX |
 |---|---|---|
 | `woow-emqx-dashboard-password` | Dashboard 使用者 `admin` | 環境變數 `EMQX_DASHBOARD__DEFAULT_PASSWORD`。EMQX 只在空的資料 volume 首次開機時讀取。 |
+| `woow-emqx-node-cookie` | Erlang 節點身分 | 環境變數 `EMQX_NODE__COOKIE`；還原時應與資料卷一起保留。 |
 | `woow-emqx-mqtt-password` | MQTT 使用者 `WOOW_EMQX_MQTT_USER` | 不掛載，是下方匯入檔的來源。 |
 | `woow-emqx-mqtt-bootstrap` | 匯入 MQTT 使用者 | `emqx` 使用者可讀的 0400 檔。認證器啟動時匯入，絕不覆蓋已存在的使用者。 |
 | `woow-emqx-ngrok-authtoken` | ngrok | 通道容器的環境變數 `NGROK_AUTHTOKEN`，只在 `--with-ngrok` 時建立 |
@@ -140,17 +145,20 @@ read -rs -p 'new dashboard password: ' p; printf '%s' "$p" | podman secret creat
   mkdir -p -m 700 ~/.config/woow-mqtt
   (umask 077; printf -- '-u woow\n-P %s\n' \
     "$(podman secret inspect --showsecret --format '{{.SecretData}}' woow-emqx-mqtt-password)" >~/.config/woow-mqtt/mosquitto_pub)
-  XDG_CONFIG_HOME=~/.config/woow-mqtt mosquitto_pub -h 127.0.0.1 -p 1883 -t test/topic -m hello
+  XDG_CONFIG_HOME=~/.config/woow-mqtt mosquitto_pub -h 127.0.0.1 -p 1883 -t woow/test/topic -m hello
   ```
 
+- **入口 WebSocket：** `ws://127.0.0.1:18083/mqtt`，子協定 `mqtt`。原有 `:8083` 直接連線仍可使用。
+- **主題權限：** 預設的 `woow` 使用者可用 `woow/#`。需要跨使用者主題的 HA／n8n 等 Hub，請在
+  Dashboard 建立 superuser 或增加 ACL；Dashboard 修改會保留於資料卷。
 - **匿名客戶端會被拒絕**，訊息為 `Connection Refused: not authorised`，這是預期行為。若要在封閉網路刻意
   允許匿名，請在 Dashboard 停用認證器；該變更存在 `cluster.hocon`，優先於 `base.hocon`。
 - **全面檢查：** `tests/smoke.sh`（加 `--quick` 可略過 MQTT 客戶端檢查）。
 
 ## ngrok TCP 通道（選用）
 
-此通道會把 raw MQTT（1883）公開到網際網路，只有在認證強制啟用時才安全；只要 smoke 測試失敗，
-`install.sh` 就會停止通道。
+此通道會把 raw MQTT 公開到網際網路。它透過私有的 PROXY protocol v2 listener 轉送，讓 EMQX
+看得到客戶端真實 IP。認證強制啟用；只要 smoke 測試失敗，`install.sh` 就會停止通道。
 
 ```bash
 NGROK_AUTHTOKEN=<your-token> scripts/install.sh --with-ngrok   # 或不設變數，在隱藏提示中輸入
@@ -189,8 +197,12 @@ scripts/restore.sh --archive ~/.local/share/woow-backups/emqx/backup-<ts>/emqx-e
 scripts/restore.sh --archive ~/.local/share/woow-backups/emqx/backup-<ts>/woow_emqx_data-<ts>.tar --confirm-restore emqx
 ```
 
-備份存放於 `~/.local/share/woow-backups/emqx/`：檔案 0600、目錄 0700，並附 `SHA256SUMS`。邏輯匯出會
-匯入執行中的 broker；volume 匯出則會先保留一份還原前的副本，再取代資料 volume。
+備份存放於 `~/.local/share/woow-backups/emqx/`：檔案 0600、目錄 0700，並附 `SHA256SUMS`。
+`secrets/` 內含 node cookie 與登入憑證，須視為與資料卷同等機密。邏輯匯出會匯入執行中的 broker；
+冷備份還原會先保留當前資料及 secrets，再還原備份的資料與配對 secrets。舊備份若沒有 `secrets/`，
+就無法用它找回遺失的 node cookie 或首次開機憑證。
+
+[HA 與 PaaS 功能對齊紀錄](docs/ha-paas-parity-2026-11-11.md)列出來源版本、功能對照、實測及差異。
 
 ## 解除安裝
 

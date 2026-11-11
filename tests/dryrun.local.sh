@@ -15,9 +15,10 @@ check "example publishes MQTT on 127.0.0.1" has_line example emqx.container 'Pub
 check "example publishes the dashboard on 127.0.0.1" has_line example emqx.container 'PublishPort=127.0.0.1:18083:18083'
 check "BIND=all omits the host address" has_line fixture-lan emqx.container 'PublishPort=21883:1883'
 check "moved ports are rendered" has_line fixture-ports-moved emqx.container 'PublishPort=127.0.0.1:28183:18083'
-check "ngrok without a reserved address" has_line example+optional emqx-ngrok.container 'Exec=tcp woow-emqx:1883 --log stdout'
+check "ngrok uses the broker network namespace" has_line example+optional emqx-ngrok.container 'Network=container:woow-emqx'
+check "ngrok uses the filtered supervisor" has_line example+optional emqx-ngrok.container 'Exec=/opt/woow/ngrok.sh'
 check "ngrok with a reserved address" has_line lan+ngrok emqx-ngrok.container \
-  'Exec=tcp woow-emqx:1883 --log stdout --remote-addr=1.tcp.ngrok.io:12345'
+  'Environment=NGROK_REMOTE_ADDR=1.tcp.ngrok.io:12345'
 check "base.hocon declares the built-in-db authenticator (anonymous off)" \
   grep -qE '^[[:space:]]*backend = built_in_database' "$REPO/config/base.hocon"
 check "no unit or config sets the EMQX 4 allow-anonymous variable" \

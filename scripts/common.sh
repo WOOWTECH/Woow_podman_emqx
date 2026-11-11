@@ -11,7 +11,7 @@ ENV_EXAMPLE=$REPO/config/$APP.env.example
 ENV_FILE=$HOME/.config/$APP/$APP.env
 BACKUP_ROOT=$HOME/.local/share/woow-backups/$APP
 # container:unit pairs the units create (legacy-collision guard)
-CONTAINERS=("woow-emqx:emqx.service" "woow-emqx-ngrok:emqx-ngrok.service")
+CONTAINERS=("woow-emqx:emqx.service" "woow-emqx-entrance:emqx-entrance.service" "woow-emqx-ngrok:emqx-ngrok.service")
 # env keys allowed to carry user-supplied credentials (ERE on the whole key; empty = none)
 ENV_CREDENTIAL_ALLOW=''
 # scripts/migrate-legacy.sh, capture path (STANDARD 7a): containers whose own deploy or upgrade
@@ -104,6 +104,38 @@ app_env_record() {
 # app_secret_read <name>: print a podman secret's value on stdout. Capture it; never echo it.
 app_secret_read() { podman secret inspect --showsecret --format '{{.SecretData}}' "$1" 2>/dev/null; }
 
+app_secret_names() {
+  printf '%s\n' woow-emqx-dashboard-password woow-emqx-node-cookie \
+    woow-emqx-mqtt-password woow-emqx-mqtt-bootstrap woow-emqx-ngrok-authtoken
+}
+
+# Keep a private copy alongside the data export. A Podman reset removes its
+# secret store independently of the EMQX data volume.
+app_backup_secrets() {
+  local dest=$1 name value
+  (umask 077 && mkdir -p -- "$dest/secrets") || ql_die "cannot create $dest/secrets"
+  while IFS= read -r name; do
+    podman secret exists "$name" >/dev/null 2>&1 || continue
+    # Podman's inspect formatter appends one display newline. Command
+    # substitution removes it while preserving the CSV's internal newline.
+    value=$(app_secret_read "$name") || ql_die "cannot read secret $name"
+    (umask 077 && printf '%s' "$value" >"$dest/secrets/$name") \
+      || ql_die "cannot back up secret $name"
+    value=''
+    [[ -s $dest/secrets/$name ]] || ql_die "empty backup of secret $name"
+  done < <(app_secret_names)
+}
+
+# Called only while the broker is stopped for a confirmed cold-volume restore.
+app_restore_secrets() {
+  local source=$1 name
+  [[ -d $source/secrets ]] || { ql_warn "$source has no saved Podman secrets"; return 0; }
+  while IFS= read -r name; do
+    [[ -s $source/secrets/$name ]] || continue
+    ql_secret_ensure "$name" "file:$source/secrets/$name" --replace
+  done < <(app_secret_names)
+}
+
 # app_guard_containers: a same-named container that Quadlet does not manage would be deleted by
 # `podman run --replace`; refuse, and print the rename command.
 app_guard_containers() {
@@ -114,6 +146,24 @@ app_guard_containers() {
 # app_wait_healthy <container> <timeout_s> <unit>: health gate that points at the logs on failure
 app_wait_healthy() {
   ql_wait_container_healthy "$1" "$2" || ql_die "$1 did not become healthy; see: journalctl --user -u $3 -n 100"
+}
+
+# After `podman system reset`, the generated one-shot units can still be
+# active although Podman has lost their resources. Recreate only those missing.
+app_reconcile_resources() {
+  local kind name unit spec
+  for spec in \
+    network:woow_emqx_network:emqx-network.service \
+    volume:woow_emqx_data:emqx-data-volume.service \
+    volume:woow_emqx_log:emqx-log-volume.service; do
+    IFS=: read -r kind name unit <<<"$spec"
+    podman "$kind" exists "$name" >/dev/null 2>&1 && continue
+    if systemctl --user is-active --quiet "$unit"; then
+      ql_info "$name is missing while $unit is active; recreating it"
+      systemctl --user restart "$unit" || ql_die "cannot restart $unit"
+      podman "$kind" exists "$name" >/dev/null 2>&1 || ql_die "$unit did not recreate $name"
+    fi
+  done
 }
 
 # app_local_host <bind>: the address this host uses to reach a port published on <bind>

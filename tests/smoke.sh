@@ -5,7 +5,7 @@
 #
 #   tests/smoke.sh [--quick] [--no-mqtt] [--skip-dashboard-login]
 #
-#   --quick                units, health, published ports and dashboard login only
+#   --quick                units, health, published ports, dashboard login and entrance routes
 #   --no-mqtt               skip the MQTT client checks (hosts that cannot pull the client image)
 #   --skip-dashboard-login  skip A4's login attempts. For a cutover run with
 #                           --keep-dashboard-password: the admin password was deliberately left as
@@ -57,12 +57,14 @@ with_ngrok=$(ql_env_get WOOW_EMQX_NGROK 0)
 
 # A1 units
 if systemctl --user is-active --quiet emqx.service; then pass "A1 emqx.service is active"; else fail "A1 emqx.service is not active"; fi
+if systemctl --user is-active --quiet emqx-entrance.service; then pass "A1 emqx-entrance.service is active"; else fail "A1 emqx-entrance.service is not active"; fi
 if [[ $with_ngrok == 1 ]]; then
   if systemctl --user is-active --quiet emqx-ngrok.service; then pass "A1 emqx-ngrok.service is active"; else fail "A1 emqx-ngrok.service is not active"; fi
 fi
 
 # A2 health (the podman health timer runs under Quadlet)
 if ql_wait_container_healthy woow-emqx 180 2>/dev/null; then pass "A2 woow-emqx is healthy"; else fail "A2 woow-emqx is not healthy"; fi
+if ql_wait_container_healthy woow-emqx-entrance 90 2>/dev/null; then pass "A2 woow-emqx-entrance is healthy"; else fail "A2 woow-emqx-entrance is not healthy"; fi
 
 # A3 exactly the five configured ports, on the configured address
 ports=$(podman port woow-emqx 2>/dev/null || true)
@@ -105,6 +107,23 @@ else
   fi
 fi
 
+# A9: dashboard and MQTT-over-WebSocket share the published HTTP port. The
+# private status and scrape endpoints must not be reachable through it.
+gateway="http://$host:$dash"
+code=$(curl -s -o /dev/null -w '%{http_code}' -m 5 "$gateway/" || true)
+if [[ $code == 200 ]]; then pass "A9 dashboard entrance answers HTTP 200"; else fail "A9 dashboard entrance returned HTTP $code"; fi
+blocked=''
+for path in /status /status/ /api/v5/status /api/v5/status/ /api/v5/prometheus/stats /api-docs; do
+  code=$(curl -s -o /dev/null -w '%{http_code}' -m 5 "$gateway$path" || true)
+  [[ $code == 404 ]] || blocked+=" $path:$code"
+done
+if [[ -z $blocked ]]; then pass "A9 private endpoints return 404"; else fail "A9 private endpoints exposed:$blocked"; fi
+code=$(curl -s -o /dev/null -w '%{http_code}' -m 5 \
+  -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' \
+  -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' -H 'Sec-WebSocket-Protocol: mqtt' \
+  "$gateway/mqtt" || true)
+if [[ $code == 101 ]]; then pass "A9 MQTT WebSocket upgrade through /mqtt"; else fail "A9 MQTT WebSocket upgrade returned HTTP $code"; fi
+
 if ((quick)); then
   printf '%s passed, %s failed, %s warnings (quick)\n' "$npass" "$nfail" "$nwarn"
   ((nfail == 0))
@@ -144,6 +163,15 @@ if ((mqtt)); then
       if [[ $got == "$msg" ]]; then pass "A6 authenticated publish/subscribe as $mqtt_user"; else fail "A6 subscriber did not receive the test message"; fi
       cmd=(mosquitto_pub -h woow-emqx -p 1883 -t "$topic" -r -n -q 1)
       run_client "${auth[@]}" >/dev/null 2>&1 || warn "A6 could not clear the retained test message on $topic"
+      # Mosquitto can return exit 0 after the broker rejects SUBSCRIBE. Check
+      # the broker's denial message, not the client's exit status.
+      cmd=(mosquitto_sub -d -h woow-emqx -p 1883 -t 'another-user/#' -C 1 -W 5)
+      denied=$(run_client "${auth[@]}" 2>&1 || true)
+      if grep -q 'All subscription requests were denied' <<<"$denied"; then
+        pass "A10 cross-user topic subscription is denied"
+      else
+        fail "A10 cross-user topic subscription was not explicitly denied"
+      fi
     else
       fail "A6 authenticated publish as $mqtt_user was refused"
     fi

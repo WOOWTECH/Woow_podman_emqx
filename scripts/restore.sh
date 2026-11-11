@@ -38,6 +38,16 @@ if [[ -f $sums ]] && grep -q "  ${archive##*/}\$" "$sums"; then
     || ql_die "checksum mismatch for $archive"
   ql_info "checksum ok: ${archive##*/}"
 fi
+if [[ -d $(dirname -- "$archive")/secrets ]]; then
+  [[ -f $sums ]] || ql_die "backup has secrets but no SHA256SUMS; refusing an unverified secret restore"
+  while IFS= read -r name; do
+    [[ -f $(dirname -- "$archive")/secrets/$name ]] || continue
+    grep -qE "  secrets/$name\$" "$sums" \
+      || ql_die "secret $name has no checksum; refusing an unverified secret restore"
+  done < <(app_secret_names)
+  (cd "$(dirname -- "$archive")" && sha256sum -c --quiet SHA256SUMS) \
+    || ql_die "backup checksum mismatch; secrets were not restored"
+fi
 
 case ${archive##*/} in
   emqx-export-*.tar.gz)
@@ -54,16 +64,19 @@ case ${archive##*/} in
     ;;
   woow_emqx_data-*.tar)
     units=(emqx.service)
+    if systemctl --user is-active --quiet emqx-entrance.service; then units+=(emqx-entrance.service); fi
     if systemctl --user is-active --quiet emqx-ngrok.service; then units+=(emqx-ngrok.service); fi
     pre=$(app_new_backup_dir pre-restore)
     systemctl --user stop emqx.service
     ql_backup_volume woow_emqx_data "$pre" >/dev/null
+    app_backup_secrets "$pre"
     app_checksums "$pre"
     ql_info "pre-restore copy of the current data: $pre"
     mp=$(podman volume inspect --format '{{.Mountpoint}}' woow_emqx_data)
     [[ $mp == /* && $mp != / ]] || ql_die "unexpected mountpoint for woow_emqx_data: $mp"
     podman unshare find "$mp" -mindepth 1 -delete
     podman volume import woow_emqx_data "$archive" || ql_die "podman volume import failed; restore $pre/woow_emqx_data-*.tar the same way"
+    app_restore_secrets "$(dirname -- "$archive")"
     systemctl --user start "${units[@]}"
     ;;
   *) ql_die "unknown archive type ${archive##*/} (want emqx-export-*.tar.gz or woow_emqx_data-*.tar)" ;;
