@@ -81,7 +81,9 @@ RENDER_ARGS=()
 render_args "$RENDER_ENV"
 ql_render "$WORK/src" "$RENDER_ENV" "$REPO/quadlet/render-vars" "$WORK/out" "${RENDER_ARGS[@]}"
 cp -p "$REPO/config/base.hocon" "$WORK/out/config/base.hocon"
-cp -p "$REPO/config/acl.conf" "$WORK/out/config/acl.conf"
+python3 "$REPO/scripts/render-acl.py" --source "$REPO/config/acl.conf" \
+  --output "$WORK/out/config/acl.conf" \
+  --ha-user "$(ql_env_get WOOW_EMQX_HA_DISCOVERY_USER '')"
 cp -p "$REPO/config/entrance.conf" "$WORK/out/config/entrance.conf"
 if [[ $with_ngrok == 1 ]]; then
   cp -p "$REPO/config/ngrok.sh" "$REPO/config/ngrok-redact.awk" "$WORK/out/config/"

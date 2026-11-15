@@ -53,7 +53,8 @@ PublishPort=@@EMQX_PUBLISH_WS@@:8083
 PublishPort=@@EMQX_PUBLISH_WSS@@:8084
 PublishPort=@@EMQX_PUBLISH_DASHBOARD@@:18083
 
-HealthCmd=emqx ctl status
+# The local node endpoint avoids starting another Erlang VM on each probe.
+HealthCmd=curl -fsS --max-time 8 -o /dev/null http://127.0.0.1:18093/status
 HealthInterval=30s
 HealthTimeout=10s
 HealthRetries=5

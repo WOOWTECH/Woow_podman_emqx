@@ -18,3 +18,6 @@ jobs:
 
       - name: Credentials, compose removal (D1), READMEs, EMQX invariants
         run: tests/lint-repo.sh
+
+      - name: HA discovery ACL isolation
+        run: python3 -m unittest discover -s tests -p test_render_acl.py -v
