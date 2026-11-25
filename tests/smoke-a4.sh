@@ -46,6 +46,7 @@ case $cmd in
         *) shift ;;
       esac
     done
+    if [[ $fmt == *.Mounts* ]]; then echo false; fi   # A7: base.hocon is mounted read-only
     if [[ $fmt == *State.Status* ]]; then
       if [[ ${SMOKE_HEALTHY:-1} == 1 ]]; then
         echo "running|hc|healthy|2026-09-14T00:00:00Z"
@@ -66,6 +67,8 @@ case $cmd in
     esac
     exit 0 ;;
   exec)
+    # `podman exec woow-emqx test -e <marker>`: A0's question (a Home Assistant import's marker). SMOKE_IMPORTED=1 says yes.
+    if [[ ${2:-} == test ]]; then [[ ${SMOKE_IMPORTED:-0} == 1 ]]; exit; fi
     # A7 (bootstrap CSV perms / base.hocon RO) and A8 (journal/log grep) are not exercised by
     # this test; a permissive default keeps them out of the way of the A1-A4 assertions below.
     echo '400 emqx'; exit 0 ;;
@@ -197,6 +200,34 @@ t_default_path_without_keep_dashboard_password_is_unaffected() {
   has "$OUT" "PASS A4 dashboard login with the generated password"
 }
 
+# A Home Assistant import (the Cockpit's) leaves woow-ha-import.json in the data volume: the Dashboard accounts, the
+# authentication and the ACL are Home Assistant's on purpose. Without this, every upgrade.sh after an import failed A4
+# (the generated password no longer logs in), A5/A6/A10 (HA's authentication and ACL) and rolled the upgrade back.
+t_green_an_import_marker_turns_the_access_checks_into_warnings() {
+  export SMOKE_IMPORTED=1 SMOKE_LOGIN_CODE=401 SMOKE_DEFAULT_CODE=200   # HA's admin/public is still in force
+  if OUT=$("$REPO/tests/smoke.sh" --no-mqtt 2>&1); then rc=0; else rc=$?; fi   # the full run: A5/A6/A10 are after --quick
+  ((rc == 0)) || die_t "an imported broker's access settings must not fail the smoke test"$'\n'"$OUT"
+  has "$OUT" "WARN A4 dashboard login skipped: this broker's Dashboard accounts come from a Home Assistant import"
+  hasnt "$OUT" "FAIL A4"
+  has "$OUT" "WARN A5/A6/A10 MQTT access checks skipped"
+}
+
+# ... while everything else still counts: an inactive unit fails even with the marker.
+t_red_an_import_marker_does_not_paper_over_a_real_failure() {
+  export SMOKE_IMPORTED=1 SMOKE_SVC_ACTIVE=0
+  if OUT=$("$REPO/tests/smoke.sh" --quick --no-mqtt 2>&1); then rc=0; else rc=$?; fi
+  ((rc != 0)) || die_t "the marker must not hide a real failure (emqx.service inactive)"
+  has "$OUT" "FAIL A1 emqx.service is not active"
+}
+
+# Without the marker nothing changes: a broker the package installed is checked as before.
+t_red_without_the_marker_a_wrong_dashboard_password_still_fails() {
+  export SMOKE_IMPORTED=0 SMOKE_LOGIN_CODE=401 SMOKE_DEFAULT_CODE=401
+  if OUT=$("$REPO/tests/smoke.sh" --quick --no-mqtt 2>&1); then rc=0; else rc=$?; fi
+  ((rc != 0)) || die_t "without the marker a login that fails must still fail A4"
+  has "$OUT" "FAIL A4 dashboard login returned HTTP 401"
+}
+
 run() {
   local t=$1 log rc
   [[ -z $FILTER || $t == *"$FILTER"* ]] || return 0
@@ -210,7 +241,7 @@ run() {
     export HOME=$T/home
     export PATH="$T/bin:$PATH"
     export QL_POLL_INTERVAL=0.05
-    unset SMOKE_HEALTHY SMOKE_PORTS_OK SMOKE_SVC_ACTIVE SMOKE_LOGIN_CODE SMOKE_DASH_SECRET SMOKE_DEFAULT_CODE
+    unset SMOKE_HEALTHY SMOKE_PORTS_OK SMOKE_SVC_ACTIVE SMOKE_LOGIN_CODE SMOKE_DASH_SECRET SMOKE_DEFAULT_CODE SMOKE_IMPORTED
     "$t"
   ) >"$log" 2>&1
   rc=$?

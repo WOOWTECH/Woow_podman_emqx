@@ -15,6 +15,10 @@
 #                           to fail and is not a sign the cutover is broken. Dashboard reachability is
 #                           still proved earlier, by install.sh's own http wait and by A1/A2 here.
 #
+# A Home Assistant import (the Cockpit's) leaves the marker woow-ha-import.json in the data volume: its Dashboard
+# accounts, authentication, ACL file and MQTT accounts are then Home Assistant's on purpose, so A4 and A5/A6/A10 are
+# reported as WARN instead of being checked against this package's own settings (see A0 below).
+#
 # Secrets are read with `podman secret inspect --showsecret` into variables and compared in-process;
 # nothing secret is printed, and passwords reach curl and the MQTT clients through 0600 files.
 # shellcheck source-path=SCRIPTDIR
@@ -33,7 +37,7 @@ while (($#)); do
     --quick) quick=1 ;;
     --no-mqtt) mqtt=0 ;;
     --skip-dashboard-login) skip_dash_login=1 ;;
-    -h | --help) sed -n '2,16p' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,23p' "$0"; exit 0 ;;
     *) ql_die "unknown option $1 (see --help)" ;;
   esac
   shift
@@ -82,11 +86,22 @@ for spec in MQTT:1883 MQTTS:8883 WS:8083 WSS:8084 DASHBOARD:18083; do
 done
 if [[ -z $bad && $nports == 5 ]]; then pass "A3 five ports published on ${bind}"; else fail "A3 published ports differ from the settings (container ports:${bad:- count $nports})"; fi
 
+# A0 who owns the access settings: the Cockpit's Home Assistant import leaves a marker in the data volume. Its Dashboard
+# accounts, authentication, ACL file and MQTT accounts are then Home Assistant's, on purpose (the same as restoring a Home
+# Assistant backup on Home Assistant OS): A4 (login with the generated password), A5 (anonymous refused), A6 (this
+# package's MQTT user) and A10 (other users' topics denied) check what this package installed and would fail every
+# upgrade (upgrade.sh rolls back on a failing smoke test). They are said, not failed. Reachability, health, ports and
+# the entrance (A1-A3, A7-A9) still count.
+imported=0
+if podman exec woow-emqx test -e /opt/emqx/data/woow-ha-import.json >/dev/null 2>&1; then imported=1; fi
+
 # A4 dashboard login with the generated password; the well-known default is rejected
 json_str() { local s=${1//\\/\\\\}; s=${s//\"/\\\"}; printf '"%s"' "$s"; }
 login() { curl -s -o /dev/null -w '%{http_code}' -m 10 -H 'Content-Type: application/json' --data @"$1" "http://$host:$dash/api/v5/login" 2>/dev/null || true; }
 dash_pw=''
-if ((skip_dash_login)); then
+if ((imported)); then
+  warn "A4 dashboard login skipped: this broker's Dashboard accounts come from a Home Assistant import (marker woow-ha-import.json in the data volume); reachability was already proved by A1/A2/A9"
+elif ((skip_dash_login)); then
   warn "A4 dashboard login skipped (--skip-dashboard-login): the admin password was intentionally kept from the legacy deployment and this script cannot know it; reachability was already proved by A1/A2 and by install.sh's own wait"
 else
   dash_pw=$(app_secret_read woow-emqx-dashboard-password || true)
@@ -131,7 +146,9 @@ if ((quick)); then
 fi
 
 mqtt_pw=$(app_secret_read woow-emqx-mqtt-password || true)
-if ((mqtt)); then
+if ((imported)); then
+  warn "A5/A6/A10 MQTT access checks skipped: this broker's authentication and ACL come from a Home Assistant import (marker woow-ha-import.json in the data volume)"
+elif ((mqtt)); then
   run_client() { podman run --rm --pull=missing --network woow_emqx_network "$@" "$MOSQUITTO_IMAGE" "${cmd[@]}"; }
   # A5 anonymous MQTT is refused: THE key check of this repo
   cmd=(mosquitto_pub -h woow-emqx -p 1883 -t woow/smoke/anon -m x -q 1)
