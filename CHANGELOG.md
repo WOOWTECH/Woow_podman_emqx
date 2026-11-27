@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- `tests/smoke.sh` no longer fails A4 (Dashboard login with the generated password) and A5/A6/A10 (anonymous login refused,
+  this package's MQTT user, other users' topics denied) after a Home Assistant import. The Cockpit's import restores Home
+  Assistant's Dashboard accounts, authentication and ACL on purpose (as restoring a backup on Home Assistant OS does) and
+  leaves the marker `woow-ha-import.json` in the data volume; with the marker those checks print WARN, everything else
+  (units, health, ports, entrance, A7-A9) still counts. Without it every `scripts/upgrade.sh` after an import failed the
+  smoke test and rolled the upgrade back. `tests/smoke-a4.sh` covers it.
+
 ## 7.0.0 — 2026-11-11 (BREAKING: MQTT topic authorization)
 
 - Aligned the broker image with the HA add-on 5.9.1 and PaaS chart 0.1.11: EMQX 5.8.9.
